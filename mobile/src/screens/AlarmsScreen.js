@@ -10,6 +10,7 @@ import {
   Modal,
   TextInput,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useAlarmStore } from '../stores/alarmStore';
@@ -114,6 +115,7 @@ function AlarmCard({ alarm, onAcknowledge, onResolve }) {
 }
 
 export default function AlarmsScreen() {
+  const insets = useSafeAreaInsets();
   const { alarms, statistics, loading, fetchAlarms, fetchStatistics, acknowledgeAlarm, resolveAlarm } = useAlarmStore();
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -198,7 +200,10 @@ export default function AlarmsScreen() {
       {/* Alarm List */}
       <ScrollView
         style={styles.list}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: Math.max(insets.bottom, 80) }
+        ]}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0ca1eb" />
         }

@@ -6,6 +6,7 @@ import {
   StyleSheet,
   RefreshControl,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import api from '../services/api';
@@ -63,6 +64,7 @@ function DeviceCard({ device }) {
 }
 
 export default function DevicesScreen() {
+  const insets = useSafeAreaInsets();
   const [devices, setDevices] = useState([]);
   const [statistics, setStatistics] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -117,7 +119,10 @@ export default function DevicesScreen() {
       {/* Device List */}
       <ScrollView
         style={styles.list}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: Math.max(insets.bottom, 80) }
+        ]}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0ca1eb" />
         }

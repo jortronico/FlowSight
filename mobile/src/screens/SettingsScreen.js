@@ -8,6 +8,7 @@ import {
   Switch,
   Alert,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuthStore } from '../stores/authStore';
@@ -41,6 +42,7 @@ function SettingToggle({ icon, label, description, value, onValueChange }) {
 }
 
 export default function SettingsScreen() {
+  const insets = useSafeAreaInsets();
   const { user, logout } = useAuthStore();
   const [settings, setSettings] = useState({
     notifications: true,
@@ -65,7 +67,13 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView 
+      style={styles.container} 
+      contentContainerStyle={[
+        styles.content,
+        { paddingBottom: Math.max(insets.bottom, 80) }
+      ]}
+    >
       {/* User Profile */}
       <View style={styles.profileCard}>
         <LinearGradient

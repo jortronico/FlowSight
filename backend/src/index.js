@@ -13,6 +13,7 @@ const alarmRoutes = require('./routes/alarm.routes');
 const valveRoutes = require('./routes/valve.routes');
 const deviceRoutes = require('./routes/device.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
+const homeAlarmRoutes = require('./routes/homeAlarm.routes');
 
 // Importar servicios
 const mqttService = require('./services/mqtt.service');
@@ -24,14 +25,20 @@ const server = http.createServer(app);
 // Configurar Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: process.env.WEB_ADMIN_URL || 'http://localhost:5173',
+    origin: '*', // Permitir todas las conexiones para desarrollo
     methods: ['GET', 'POST']
   }
 });
 
 // Middlewares
 app.use(helmet());
-app.use(cors());
+// Configurar CORS para permitir conexiones desde la app móvil
+app.use(cors({
+  origin: '*', // En desarrollo permite todas las conexiones
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -43,6 +50,7 @@ app.use('/api/alarms', alarmRoutes);
 app.use('/api/valves', valveRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/home-alarm', homeAlarmRoutes);
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {
@@ -73,9 +81,12 @@ app.use('*', (req, res) => {
 
 // Inicializar servicios
 const PORT = process.env.API_PORT || 3001;
+const HOST = process.env.API_HOST || '0.0.0.0'; // Escuchar en todas las interfaces
 
-server.listen(PORT, () => {
-  console.log(`🚀 FlowSight API corriendo en puerto ${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`🚀 FlowSight API corriendo en ${HOST}:${PORT}`);
+  console.log(`   Accesible desde: http://localhost:${PORT}`);
+  console.log(`   Accesible desde la red: http://192.168.0.14:${PORT}`);
   
   // Inicializar Socket.IO
   socketService.initialize(io);

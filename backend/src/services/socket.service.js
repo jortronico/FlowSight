@@ -92,6 +92,20 @@ const socketService = {
     }
   },
 
+  // Método genérico para emitir eventos
+  emit(event, data) {
+    if (io) {
+      io.emit(event, data);
+    }
+  },
+
+  // Emitir a una sala específica
+  emitToRoom(room, event, data) {
+    if (io) {
+      io.to(room).emit(event, data);
+    }
+  },
+
   getIO() {
     return io;
   }

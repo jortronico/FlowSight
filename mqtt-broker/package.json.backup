@@ -8,12 +8,12 @@
     "dev": "nodemon src/index.js"
   },
   "dependencies": {
-    "aedes": "^0.50.1",
-    "aedes-persistence": "^9.0.0",
+    "aedes": "^0.51.0",
+    "aedes-persistence": "^9.1.0",
     "dotenv": "^16.3.1",
     "ws": "^8.16.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "nodemon": "^3.0.2"
   }
 }

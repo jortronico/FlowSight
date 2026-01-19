@@ -7,6 +7,7 @@ import {
   RefreshControl,
   TouchableOpacity,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useAlarmStore } from '../stores/alarmStore';
@@ -56,6 +57,7 @@ function AlarmItem({ alarm }) {
 }
 
 export default function DashboardScreen() {
+  const insets = useSafeAreaInsets();
   const { activeAlarms, statistics: alarmStats, fetchActiveAlarms, fetchStatistics: fetchAlarmStats } = useAlarmStore();
   const { statistics: valveStats, fetchStatistics: fetchValveStats } = useValveStore();
   const [deviceStats, setDeviceStats] = useState(null);
@@ -92,7 +94,10 @@ export default function DashboardScreen() {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[
+        styles.content,
+        { paddingBottom: Math.max(insets.bottom, 80) }
+      ]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}

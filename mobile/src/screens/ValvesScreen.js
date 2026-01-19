@@ -9,6 +9,7 @@ import {
   Alert,
   Modal,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -160,6 +161,7 @@ function ValveCard({ valve, onOpen, onClose, onSetPosition }) {
 }
 
 export default function ValvesScreen() {
+  const insets = useSafeAreaInsets();
   const { valves, statistics, loading, fetchValves, fetchStatistics, openValve, closeValve, setPosition } = useValveStore();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -221,7 +223,10 @@ export default function ValvesScreen() {
       {/* Valve List */}
       <ScrollView
         style={styles.list}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: Math.max(insets.bottom, 80) }
+        ]}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0ca1eb" />
         }

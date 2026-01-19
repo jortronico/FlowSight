@@ -1,9 +1,12 @@
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
+import { Platform } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from './src/stores/authStore';
 import { socketService } from './src/services/socket';
 
@@ -14,6 +17,7 @@ import AlarmsScreen from './src/screens/AlarmsScreen';
 import ValvesScreen from './src/screens/ValvesScreen';
 import DevicesScreen from './src/screens/DevicesScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import HomeAlarmScreen from './src/screens/HomeAlarmScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -31,6 +35,8 @@ const theme = {
 };
 
 function TabNavigator() {
+  const insets = useSafeAreaInsets();
+  
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -50,6 +56,9 @@ function TabNavigator() {
             case 'Dispositivos':
               iconName = focused ? 'hardware-chip' : 'hardware-chip-outline';
               break;
+            case 'Alarma Hogar':
+              iconName = focused ? 'home' : 'home-outline';
+              break;
             case 'Ajustes':
               iconName = focused ? 'settings' : 'settings-outline';
               break;
@@ -64,9 +73,12 @@ function TabNavigator() {
         tabBarStyle: {
           backgroundColor: '#1e293b',
           borderTopColor: '#334155',
-          paddingTop: 5,
-          paddingBottom: 5,
-          height: 60,
+          paddingTop: 8,
+          paddingBottom: Math.max(insets.bottom, 8),
+          height: 60 + Math.max(insets.bottom - 8, 0),
+          position: 'absolute',
+          elevation: 0,
+          borderTopWidth: 1,
         },
         headerStyle: {
           backgroundColor: '#1e293b',
@@ -87,6 +99,7 @@ function TabNavigator() {
       />
       <Tab.Screen name="Válvulas" component={ValvesScreen} />
       <Tab.Screen name="Dispositivos" component={DevicesScreen} />
+      <Tab.Screen name="Alarma Hogar" component={HomeAlarmScreen} />
       <Tab.Screen name="Ajustes" component={SettingsScreen} />
     </Tab.Navigator>
   );
@@ -109,16 +122,18 @@ export default function App() {
   }, [isAuthenticated]);
 
   return (
-    <NavigationContainer theme={theme}>
-      <StatusBar style="light" />
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {!isAuthenticated ? (
-          <Stack.Screen name="Login" component={LoginScreen} />
-        ) : (
-          <Stack.Screen name="Main" component={TabNavigator} />
-        )}
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <NavigationContainer theme={theme}>
+        <StatusBar style="light" />
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          {!isAuthenticated ? (
+            <Stack.Screen name="Login" component={LoginScreen} />
+          ) : (
+            <Stack.Screen name="Main" component={TabNavigator} />
+          )}
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }
 
