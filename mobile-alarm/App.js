@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -12,10 +11,7 @@ import { socketService } from './src/services/socket';
 
 // Screens
 import LoginScreen from './src/screens/LoginScreen';
-import DashboardScreen from './src/screens/DashboardScreen';
-import AlarmsScreen from './src/screens/AlarmsScreen';
-import ValvesScreen from './src/screens/ValvesScreen';
-import DevicesScreen from './src/screens/DevicesScreen';
+import HomeAlarmScreen from './src/screens/HomeAlarmScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 
 const Stack = createNativeStackNavigator();
@@ -43,17 +39,8 @@ function TabNavigator() {
           let iconName;
 
           switch (route.name) {
-            case 'Dashboard':
-              iconName = focused ? 'grid' : 'grid-outline';
-              break;
-            case 'Alarmas':
-              iconName = focused ? 'notifications' : 'notifications-outline';
-              break;
-            case 'Válvulas':
-              iconName = focused ? 'water' : 'water-outline';
-              break;
-            case 'Dispositivos':
-              iconName = focused ? 'hardware-chip' : 'hardware-chip-outline';
+            case 'Alarma':
+              iconName = focused ? 'shield' : 'shield-outline';
               break;
             case 'Ajustes':
               iconName = focused ? 'settings' : 'settings-outline';
@@ -85,16 +72,13 @@ function TabNavigator() {
         },
       })}
     >
-      <Tab.Screen name="Dashboard" component={DashboardScreen} />
       <Tab.Screen 
-        name="Alarmas" 
-        component={AlarmsScreen}
+        name="Alarma" 
+        component={HomeAlarmScreen}
         options={{
-          tabBarBadge: undefined, // Se actualizará dinámicamente
+          title: 'Alarma del Hogar',
         }}
       />
-      <Tab.Screen name="Válvulas" component={ValvesScreen} />
-      <Tab.Screen name="Dispositivos" component={DevicesScreen} />
       <Tab.Screen name="Ajustes" component={SettingsScreen} />
     </Tab.Navigator>
   );
