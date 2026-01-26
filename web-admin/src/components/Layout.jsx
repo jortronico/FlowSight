@@ -13,13 +13,15 @@ import {
   LogOut, 
   Menu, 
   X,
-  Droplets
+  Droplets,
+  Shield
 } from 'lucide-react';
 import clsx from 'clsx';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/alarms', icon: Bell, label: 'Alarmas' },
+  { to: '/home-alarm', icon: Shield, label: 'Alarma Hogar' },
   { to: '/valves', icon: Droplets, label: 'Válvulas' },
   { to: '/devices', icon: Cpu, label: 'Dispositivos' },
   { to: '/users', icon: Users, label: 'Usuarios' },

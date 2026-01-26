@@ -8,6 +8,7 @@ import Valves from './pages/Valves';
 import Devices from './pages/Devices';
 import Users from './pages/Users';
 import Settings from './pages/Settings';
+import HomeAlarm from './pages/HomeAlarm';
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated } = useAuthStore();
@@ -32,6 +33,7 @@ function App() {
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="alarms" element={<Alarms />} />
+        <Route path="home-alarm" element={<HomeAlarm />} />
         <Route path="valves" element={<Valves />} />
         <Route path="devices" element={<Devices />} />
         <Route path="users" element={<Users />} />

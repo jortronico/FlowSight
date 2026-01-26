@@ -1,8 +1,17 @@
 import { io } from 'socket.io-client';
 import { useAlarmStore } from '../stores/alarmStore';
 import { useValveStore } from '../stores/valveStore';
+import { useHomeAlarmStore } from '../stores/homeAlarmStore';
 
-const SOCKET_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Socket.IO necesita la URL base sin /api
+const getSocketURL = () => {
+  const apiUrl = import.meta.env.VITE_API_URL || 
+    (import.meta.env.DEV ? 'http://localhost:3001' : 'https://alarma.puntopedido.com.ar');
+  // Remover /api si está presente para Socket.IO
+  return apiUrl.replace(/\/api$/, '');
+};
+
+const SOCKET_URL = getSocketURL();
 
 class SocketService {
   constructor() {
@@ -36,6 +45,7 @@ class SocketService {
     this.socket.emit('join:alarms');
     this.socket.emit('join:valves');
     this.socket.emit('join:devices');
+    this.socket.emit('join:home_alarm');
   }
 
   setupListeners() {
@@ -60,6 +70,26 @@ class SocketService {
     // Dispositivos
     this.socket.on('device:update', (device) => {
       console.log('📱 Actualización de dispositivo:', device);
+    });
+
+    // Alarma del Hogar
+    this.socket.on('home_alarm:status', (status) => {
+      console.log('🏠 Actualización de alarma del hogar:', status);
+      useHomeAlarmStore.getState().updateStatus(status);
+    });
+
+    this.socket.on('home_alarm:event', (event) => {
+      console.log('🏠 Evento de alarma del hogar:', event);
+      useHomeAlarmStore.getState().fetchStatus();
+      useHomeAlarmStore.getState().fetchHistory(50);
+      if (event.event_type === 'triggered') {
+        this.showNotification('🚨 Alarma Disparada', event.message || 'La alarma del hogar se ha disparado');
+      }
+    });
+
+    this.socket.on('home_alarm:sensor_updated', (sensor) => {
+      console.log('🏠 Sensor actualizado:', sensor);
+      useHomeAlarmStore.getState().updateSensor(sensor);
     });
 
     // Notificaciones generales
