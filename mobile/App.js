@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from './src/stores/authStore';
 import { socketService } from './src/services/socket';
+import { notificationService } from './src/services/notifications';
 
 // Screens
 import LoginScreen from './src/screens/LoginScreen';
@@ -102,17 +103,35 @@ function TabNavigator() {
 
 export default function App() {
   const { isAuthenticated, initAuth } = useAuthStore();
+  const notificationListener = useRef(null);
+  const responseListener = useRef(null);
 
   useEffect(() => {
     initAuth();
+    
+    // Solicitar permisos de notificaciones al iniciar
+    notificationService.requestPermissions();
   }, []);
 
   useEffect(() => {
     if (isAuthenticated) {
       socketService.connect();
+      
+      // Configurar listeners de notificaciones
+      notificationService.setupNotificationListeners(
+        (notification) => {
+          console.log('📬 Notificación recibida:', notification);
+        },
+        (response) => {
+          console.log('👆 Usuario tocó notificación:', response);
+          // Aquí podrías navegar a una pantalla específica
+        }
+      );
     }
+    
     return () => {
       socketService.disconnect();
+      notificationService.removeNotificationListeners();
     };
   }, [isAuthenticated]);
 

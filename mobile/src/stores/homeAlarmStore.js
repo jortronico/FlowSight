@@ -235,6 +235,22 @@ export const useHomeAlarmStore = create((set, get) => ({
     }));
   },
 
+  // Resetear estado de tamper
+  resetTamper: async () => {
+    try {
+      const response = await api.post('/home-alarm/reset-tamper');
+      set(state => ({
+        status: { ...state.status, tamper_triggered: false, tamper_state: 0 }
+      }));
+      return { success: true, message: response.data.message };
+    } catch (error) {
+      return { 
+        success: false, 
+        message: error.response?.data?.message || 'Error reseteando tamper' 
+      };
+    }
+  },
+
   // Actualizar horario desde Socket.IO
   updateScheduleFromSocket: (schedule) => {
     set(state => {

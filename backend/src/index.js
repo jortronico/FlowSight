@@ -22,19 +22,26 @@ const socketService = require('./services/socket.service');
 const app = express();
 const server = http.createServer(app);
 
+// Configurar trust proxy para trabajar detrás de un reverse proxy
+app.set('trust proxy', true);
+
+// Configurar origen permitido (usar variable de entorno o dominio por defecto)
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://alarma.puntopedido.com.ar';
+
 // Configurar Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: '*', // Permitir todas las conexiones para desarrollo
+    origin: ALLOWED_ORIGIN,
+    credentials: true,
     methods: ['GET', 'POST']
   }
 });
 
 // Middlewares
 app.use(helmet());
-// Configurar CORS para permitir conexiones desde la app móvil
+// Configurar CORS para permitir conexiones desde el dominio específico
 app.use(cors({
-  origin: '*', // En desarrollo permite todas las conexiones
+  origin: ALLOWED_ORIGIN,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -87,6 +94,8 @@ server.listen(PORT, HOST, () => {
   console.log(`🚀 FlowSight API corriendo en ${HOST}:${PORT}`);
   console.log(`   Accesible desde: http://localhost:${PORT}`);
   console.log(`   Accesible desde la red: http://192.168.0.14:${PORT}`);
+  console.log(`   Origen permitido (CORS): ${ALLOWED_ORIGIN}`);
+  console.log(`   Trust proxy: habilitado`);
   
   // Inicializar Socket.IO
   socketService.initialize(io);

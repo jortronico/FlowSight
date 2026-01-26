@@ -17,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useHomeAlarmStore } from '../stores/homeAlarmStore';
 import { socketService } from '../services/socket';
+import { notificationService } from '../services/notifications';
 
 function SensorCard({ sensor, onToggle }) {
   const getSensorIcon = () => {
@@ -147,6 +148,7 @@ export default function HomeAlarmScreen() {
     deleteSchedule,
     toggleSchedule,
     setAutoArm,
+    resetTamper,
   } = useHomeAlarmStore();
 
   const [refreshing, setRefreshing] = useState(false);
@@ -166,24 +168,108 @@ export default function HomeAlarmScreen() {
   useEffect(() => {
     loadData();
     
+    let previousStatus = null;
+    
     // Escuchar eventos de Socket.IO
     socketService.on('home_alarm:status', (data) => {
+      const currentStatus = useHomeAlarmStore.getState().status;
+      
+      // Detectar cambio de estado y enviar notificación
+      if (previousStatus && previousStatus.status !== data.status) {
+        const statusText = data.status === 'armed' ? 'activada' : 
+                          data.status === 'disarmed' ? 'desactivada' : 
+                          data.status === 'triggered' ? 'disparada' : 'cambiada';
+        
+        notificationService.notifyAlarmStatusChange(
+          data.status,
+          `La alarma ha sido ${statusText}`
+        );
+        
+        Haptics.notificationAsync(
+          data.status === 'triggered' 
+            ? Haptics.NotificationFeedbackType.Error
+            : Haptics.NotificationFeedbackType.Success
+        );
+      }
+      
+      previousStatus = data;
       useHomeAlarmStore.getState().updateStatus(data);
     });
 
     socketService.on('home_alarm:event', (data) => {
       // Recargar datos cuando hay un evento
       loadData();
+      
+      // Enviar notificación según el tipo de evento
+      if (data.event_type === 'armed') {
+        notificationService.notifyAlarmStatusChange('armed', 'Alarma activada');
+      } else if (data.event_type === 'disarmed') {
+        notificationService.notifyAlarmStatusChange('disarmed', 'Alarma desactivada');
+      } else if (data.event_type === 'triggered') {
+        notificationService.notifyAlarmStatusChange('triggered', data.message || 'Alarma disparada');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      } else if (data.event_type === 'tamper_activated') {
+        notificationService.notifyTamper(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      } else if (data.event_type === 'tamper_restored') {
+        notificationService.notifyTamper(false);
+      } else if (data.event_type === 'siren_on') {
+        notificationService.notifySiren(true);
+      } else if (data.event_type === 'siren_off') {
+        notificationService.notifySiren(false);
+      }
     });
 
     socketService.on('home_alarm:sensor_updated', (data) => {
       useHomeAlarmStore.getState().updateSensor(data);
     });
 
+    socketService.on('home_alarm:central_status', (data) => {
+      const currentStatus = useHomeAlarmStore.getState().status;
+      
+      // Detectar cambios en tamper
+      if (currentStatus && currentStatus.tamper_triggered !== data.tamper_triggered) {
+        notificationService.notifyTamper(data.tamper_triggered);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      }
+      
+      // Detectar cambios en sirena
+      const newSirenActive = data.siren_active;
+      const oldSirenActive = currentStatus?.siren_status !== 'off';
+      if (currentStatus && newSirenActive !== oldSirenActive) {
+        notificationService.notifySiren(newSirenActive);
+      }
+      
+      // Actualizar estado de la central (sirena, tamper, etc.)
+      useHomeAlarmStore.getState().updateStatus({
+        ...currentStatus,
+        siren_status: data.siren_active ? 'on' : 'off',
+        siren_state: data.siren_state,
+        tamper_triggered: data.tamper_triggered,
+        tamper_state: data.tamper_state,
+      });
+    });
+
+    socketService.on('home_alarm:trigger', (data) => {
+      // Alarma disparada
+      notificationService.notifySensorTriggered(data.sensor_name || 'Sensor');
+      notificationService.notifyAlarmStatusChange('triggered', `Sensor ${data.sensor_name} activado`);
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        '🚨 Alarma Disparada',
+        `Sensor ${data.sensor_name} activado`,
+        [{ text: 'OK' }]
+      );
+      loadData();
+    });
+
     return () => {
       socketService.off('home_alarm:status');
       socketService.off('home_alarm:event');
       socketService.off('home_alarm:sensor_updated');
+      socketService.off('home_alarm:central_status');
+      socketService.off('home_alarm:trigger');
     };
   }, []);
 
@@ -249,6 +335,7 @@ export default function HomeAlarmScreen() {
               if (!result.success) {
                 Alert.alert('Error', result.message);
               }
+              // Notificación se enviará automáticamente vía Socket.IO
             },
           },
         ]
@@ -258,6 +345,7 @@ export default function HomeAlarmScreen() {
       if (!result.success) {
         Alert.alert('Error', result.message);
       }
+      // Notificación se enviará automáticamente vía Socket.IO
     }
   };
 
@@ -408,6 +496,12 @@ export default function HomeAlarmScreen() {
               Activada: {new Date(status.last_armed_at).toLocaleString()}
             </Text>
           )}
+          {status.tamper_triggered && (
+            <View style={styles.tamperBadge}>
+              <Ionicons name="warning" size={16} color="white" />
+              <Text style={styles.tamperBadgeText}>TAMPER ACTIVO</Text>
+            </View>
+          )}
         </LinearGradient>
 
         <View style={styles.statusActions}>
@@ -425,32 +519,111 @@ export default function HomeAlarmScreen() {
         </View>
       </View>
 
-      {/* Control de Sirena */}
+      {/* Estado de Sirena y Tamper */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Sirena</Text>
-          <TouchableOpacity
-            style={[
-              styles.sirenButton,
-              status.siren_status !== 'off' && styles.sirenButtonActive
-            ]}
-            onPress={handleSiren}
-          >
+          <Text style={styles.sectionTitle}>Estado del Sistema</Text>
+        </View>
+
+        {/* Estado de Sirena */}
+        <View style={styles.statusRow}>
+          <View style={styles.statusInfo}>
             <Ionicons
               name={status.siren_status !== 'off' ? 'volume-high' : 'volume-mute'}
               size={20}
               color={status.siren_status !== 'off' ? '#ef4444' : '#64748b'}
             />
-            <Text
-              style={[
-                styles.sirenButtonText,
-                status.siren_status !== 'off' && styles.sirenButtonTextActive
-              ]}
-            >
+            <View style={styles.statusTextContainer}>
+              <Text style={styles.statusLabel}>Sirena</Text>
+              <Text style={[
+                styles.statusValue,
+                status.siren_status !== 'off' && styles.statusValueActive
+              ]}>
+                {status.siren_status === 'off' ? 'Desactivada' : 
+                 status.siren_status === 'on' ? 'Activada' : 
+                 status.siren_status === 'manual' ? 'Manual' : 'Activada'}
+              </Text>
+              {status.siren_state !== undefined && (
+                <Text style={styles.statusDetail}>
+                  Estado: {status.siren_state === 1 ? 'ON' : 'OFF'}
+                </Text>
+              )}
+            </View>
+          </View>
+          <TouchableOpacity
+            style={[
+              styles.controlButton,
+              status.siren_status !== 'off' && styles.controlButtonActive
+            ]}
+            onPress={handleSiren}
+          >
+            <Text style={[
+              styles.controlButtonText,
+              status.siren_status !== 'off' && styles.controlButtonTextActive
+            ]}>
               {status.siren_status !== 'off' ? 'Desactivar' : 'Activar'}
             </Text>
           </TouchableOpacity>
         </View>
+
+        {/* Estado de Tamper */}
+        {status.tamper_triggered !== undefined && (
+          <View style={[
+            styles.statusRow,
+            status.tamper_triggered && styles.statusRowAlert
+          ]}>
+            <View style={styles.statusInfo}>
+              <Ionicons
+                name={status.tamper_triggered ? 'warning' : 'shield-checkmark'}
+                size={20}
+                color={status.tamper_triggered ? '#ef4444' : '#22c55e'}
+              />
+              <View style={styles.statusTextContainer}>
+                <Text style={styles.statusLabel}>Tamper (Sabotaje)</Text>
+                <Text style={[
+                  styles.statusValue,
+                  status.tamper_triggered && styles.statusValueAlert
+                ]}>
+                  {status.tamper_triggered ? '⚠️ ACTIVADO' : '✓ Normal'}
+                </Text>
+                {status.tamper_state !== undefined && (
+                  <Text style={styles.statusDetail}>
+                    Estado: {status.tamper_state === 1 ? 'ON (Activo)' : 'OFF (Normal)'}
+                  </Text>
+                )}
+              </View>
+            </View>
+            {status.tamper_triggered && (
+              <TouchableOpacity
+                style={[styles.controlButton, styles.controlButtonReset]}
+                onPress={async () => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  Alert.alert(
+                    'Resetear Tamper',
+                    '¿Estás seguro de que deseas resetear el estado del tamper?',
+                    [
+                      { text: 'Cancelar', style: 'cancel' },
+                      {
+                        text: 'Resetear',
+                        style: 'destructive',
+                        onPress: async () => {
+                          const result = await resetTamper();
+                          if (result.success) {
+                            Alert.alert('Éxito', result.message);
+                          } else {
+                            Alert.alert('Error', result.message);
+                          }
+                        },
+                      },
+                    ]
+                  );
+                }}
+              >
+                <Text style={styles.controlButtonText}>Resetear</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </View>
 
       {/* Sensores */}
@@ -683,6 +856,23 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.8)',
     marginTop: 8,
   },
+  tamperBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(239, 68, 68, 0.3)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+  },
+  tamperBadgeText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
   statusActions: {
     padding: 16,
     backgroundColor: 'rgba(30, 41, 59, 0.5)',
@@ -752,6 +942,75 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   sirenButtonTextActive: {
+    color: '#ef4444',
+  },
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  statusRowAlert: {
+    borderColor: '#ef4444',
+    backgroundColor: '#ef444420',
+  },
+  statusInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  statusTextContainer: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  statusLabel: {
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 2,
+  },
+  statusValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#f1f5f9',
+  },
+  statusValueActive: {
+    color: '#ef4444',
+  },
+  statusValueAlert: {
+    color: '#ef4444',
+  },
+  statusDetail: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  controlButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+  },
+  controlButtonActive: {
+    borderColor: '#ef4444',
+    backgroundColor: '#ef444420',
+  },
+  controlButtonReset: {
+    borderColor: '#f59e0b',
+    backgroundColor: '#f59e0b20',
+  },
+  controlButtonText: {
+    color: '#64748b',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  controlButtonTextActive: {
     color: '#ef4444',
   },
   sensorCard: {

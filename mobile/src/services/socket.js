@@ -2,10 +2,7 @@ import { io } from 'socket.io-client';
 import { useAlarmStore } from '../stores/alarmStore';
 import { useValveStore } from '../stores/valveStore';
 import * as Haptics from 'expo-haptics';
-
-// Cambiar esta URL según tu configuración
-// Para Expo Go, usa la IP local de tu PC en la misma red WiFi
-const SOCKET_URL = 'http://192.168.0.14:3001';
+import { SOCKET_URL } from '../config/api';
 
 class SocketService {
   constructor() {

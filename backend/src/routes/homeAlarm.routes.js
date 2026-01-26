@@ -18,6 +18,9 @@ router.post('/disarm', adminMiddleware, homeAlarmController.disarm);
 router.post('/siren/activate', adminMiddleware, homeAlarmController.activateSiren);
 router.post('/siren/deactivate', adminMiddleware, homeAlarmController.deactivateSiren);
 
+// Resetear tamper: Solo admin puede resetear
+router.post('/reset-tamper', adminMiddleware, homeAlarmController.resetTamper);
+
 // Sensores: Operadores y admin pueden ver, solo admin puede modificar
 router.get('/sensors', homeAlarmController.getSensors);
 router.put('/sensors/:id/toggle', adminMiddleware, homeAlarmController.toggleSensor);

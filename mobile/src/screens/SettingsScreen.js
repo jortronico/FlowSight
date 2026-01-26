@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuthStore } from '../stores/authStore';
+import { API_BASE_URL } from '../config/api';
 
 function SettingItem({ icon, label, description, children }) {
   return (
@@ -140,7 +141,9 @@ export default function SettingsScreen() {
           </View>
           <View style={styles.settingContent}>
             <Text style={styles.settingLabel}>Servidor API</Text>
-            <Text style={styles.settingDescription}>192.168.1.100:3001</Text>
+            <Text style={styles.settingDescription}>
+              {API_BASE_URL.replace(/^https?:\/\//, '')}
+            </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#64748b" />
         </TouchableOpacity>

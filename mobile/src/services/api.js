@@ -1,8 +1,5 @@
 import axios from 'axios';
-
-// Cambiar esta URL según tu configuración
-// Para Expo Go, usa la IP local de tu PC en la misma red WiFi
-const API_URL = 'http://192.168.0.14:3001/api';
+import { API_URL } from '../config/api';
 
 const api = axios.create({
   baseURL: API_URL,
@@ -24,8 +21,8 @@ api.interceptors.response.use(
       console.error('❌ Error: Timeout - El backend no respondió a tiempo');
     } else if (error.code === 'ERR_NETWORK') {
       console.error('❌ Error: Problema de red');
-      console.error('   Verifica que estés en la misma WiFi que tu PC');
-      console.error('   Prueba: http://192.168.0.14:3001/api/health en el navegador del teléfono');
+      console.error('   Verifica tu conexión a internet');
+      console.error(`   Prueba: ${API_URL}/health en el navegador del teléfono`);
     } else if (error.response?.status === 401) {
       // Token expirado - se manejará en el authStore
     }

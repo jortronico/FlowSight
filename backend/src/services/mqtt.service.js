@@ -44,7 +44,13 @@ const mqttService = {
       mqttConfig.topics.VALVE_STATUS,
       mqttConfig.topics.VALVE_POSITION,
       mqttConfig.topics.DEVICE_HEARTBEAT,
-      mqttConfig.topics.DEVICE_TELEMETRY
+      mqttConfig.topics.DEVICE_TELEMETRY,
+      // Home alarm topics
+      'flowsight/home-alarm/central/status',
+      'flowsight/home-alarm/central/command',
+      'flowsight/home-alarm/sensors/data',
+      'flowsight/home-alarm/central/trigger',
+      'flowsight/home-alarm/central/heartbeat'
     ];
 
     topics.forEach(topic => {
@@ -202,6 +208,112 @@ const mqttService = {
     if (client && client.connected) {
       client.publish(topic, JSON.stringify(payload), { qos: 1 });
     }
+  },
+
+  // ============================================
+  // HANDLERS PARA HOME ALARM
+  // ============================================
+  async handleHomeAlarmStatus(payload) {
+    console.log('🏠 Estado central alarma:', payload);
+    
+    // Actualizar estado en base de datos
+    try {
+      const HomeAlarmModel = require('../models/homeAlarm.model');
+      const db = require('../config/database');
+      
+      // Actualizar campos de tamper y sirena_state si vienen en el payload
+      if (payload.tamper_triggered !== undefined || payload.siren_state !== undefined) {
+        const updates = [];
+        const params = [];
+        
+        if (payload.tamper_triggered !== undefined) {
+          updates.push('tamper_triggered = ?', 'tamper_state = ?');
+          params.push(payload.tamper_triggered, payload.tamper_triggered ? 1 : 0);
+        }
+        
+        if (payload.siren_state !== undefined) {
+          updates.push('siren_state = ?');
+          params.push(payload.siren_state);
+          
+          // También actualizar siren_status basado en siren_state
+          if (payload.siren_state === 1) {
+            updates.push('siren_status = ?');
+            params.push('on');
+          } else {
+            updates.push('siren_status = ?');
+            params.push('off');
+          }
+        }
+        
+        if (updates.length > 0) {
+          updates.push('updated_at = NOW()');
+          params.push(1); // ID de la alarma
+          
+          await db.execute(
+            `UPDATE home_alarm SET ${updates.join(', ')} WHERE id = ?`,
+            params
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error actualizando estado desde MQTT:', error);
+    }
+    
+    if (socketService) {
+      socketService.emit('home_alarm:central_status', payload);
+      // También emitir actualización de estado general
+      socketService.emit('home_alarm:status', {
+        ...payload,
+        siren_status: payload.siren_active ? 'on' : 'off',
+      });
+    }
+  },
+
+  async handleHomeAlarmSensorData(payload) {
+    console.log('📡 Datos sensor alarma:', payload);
+    
+    if (socketService) {
+      socketService.emit('home_alarm:sensor_data', payload);
+    }
+  },
+
+  async handleHomeAlarmTrigger(payload) {
+    console.log('🚨 Alarma disparada:', payload);
+    
+    // Aquí podrías guardar en base de datos si es necesario
+    if (socketService) {
+      socketService.emit('home_alarm:trigger', payload);
+      socketService.emit('home_alarm:event', {
+        event_type: 'triggered',
+        message: `Sensor ${payload.sensor_name} activado`,
+        sensor_id: payload.sensor_id,
+        timestamp: new Date()
+      });
+    }
+  },
+
+  async handleHomeAlarmHeartbeat(payload) {
+    // Log cada 10 heartbeats para no saturar
+    if (Math.random() < 0.1) {
+      console.log('💓 Heartbeat central alarma:', payload.device_id);
+    }
+    
+    if (socketService) {
+      socketService.emit('home_alarm:heartbeat', payload);
+    }
+  },
+
+  // Publicar comando a la central
+  publishHomeAlarmCommand(command, value) {
+    const topic = 'flowsight/home-alarm/central/command';
+    const payload = {
+      command,
+      value,
+      timestamp: new Date().toISOString()
+    };
+    
+    this.publish(topic, payload);
+    console.log(`📤 Comando enviado a central: ${command} = ${value}`);
   },
 
   getClient() {

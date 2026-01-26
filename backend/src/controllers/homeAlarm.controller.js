@@ -1,5 +1,6 @@
 const HomeAlarmModel = require('../models/homeAlarm.model');
 const socketService = require('../services/socket.service');
+const mqttService = require('../services/mqtt.service');
 const db = require('../config/database');
 
 // Función para registrar eventos de seguridad
@@ -28,13 +29,20 @@ const homeAlarmController = {
       const sensors = await HomeAlarmModel.getSensors();
       const schedules = await HomeAlarmModel.getSchedules();
 
+      // Agregar campos adicionales que pueden venir de MQTT
+      // Si no existen en BD, se inicializan con valores por defecto
+      const enhancedStatus = {
+        ...status,
+        tamper_triggered: status.tamper_triggered || false,
+        tamper_state: status.tamper_state !== undefined ? status.tamper_state : 0,
+        siren_state: status.siren_state !== undefined ? status.siren_state : 0,
+        sensors,
+        schedules
+      };
+
       res.json({
         success: true,
-        data: {
-          ...status,
-          sensors,
-          schedules
-        }
+        data: enhancedStatus
       });
     } catch (error) {
       console.error('Error obteniendo estado de alarma:', error);
@@ -79,6 +87,9 @@ const homeAlarmController = {
         user_id: userId,
         message: 'Alarma activada manualmente'
       });
+
+      // Enviar comando por MQTT a la central
+      mqttService.publishHomeAlarmCommand('arm', true);
 
       // Notificar por Socket.IO
       socketService.emit('home_alarm:status', status);
@@ -150,6 +161,9 @@ const homeAlarmController = {
         user_id: userId,
         message: 'Alarma desactivada manualmente'
       });
+
+      // Enviar comando por MQTT a la central
+      mqttService.publishHomeAlarmCommand('arm', false);
 
       // Notificar por Socket.IO
       socketService.emit('home_alarm:status', status);
@@ -229,6 +243,66 @@ const homeAlarmController = {
     }
   },
 
+  // Resetear tamper
+  async resetTamper(req, res) {
+    try {
+      const userId = req.user.id;
+      const userRole = req.user.role;
+      const userEmail = req.user.email;
+
+      // Validación adicional: Solo admin puede resetear tamper
+      if (userRole !== 'admin') {
+        await logSecurityEvent('UNAUTHORIZED_TAMPER_RESET_ATTEMPT', userId, {
+          email: userEmail,
+          role: userRole,
+          ip: req.ip
+        });
+        return res.status(403).json({
+          success: false,
+          message: 'Acceso denegado. Solo administradores pueden resetear el tamper'
+        });
+      }
+
+      // Registrar evento de seguridad
+      await logSecurityEvent('TAMPER_RESET', userId, {
+        email: userEmail,
+        ip: req.ip,
+        timestamp: new Date().toISOString()
+      });
+
+      // Actualizar estado en base de datos
+      const db = require('../config/database');
+      await db.execute(
+        'UPDATE home_alarm SET tamper_triggered = FALSE, tamper_state = 0, updated_at = NOW() WHERE id = ?',
+        [1]
+      );
+
+      const status = await HomeAlarmModel.getStatus();
+      
+      // Enviar comando por MQTT a la central para resetear tamper
+      mqttService.publishHomeAlarmCommand('reset_tamper', false);
+      
+      // Notificar por Socket.IO
+      socketService.emit('home_alarm:status', {
+        ...status,
+        tamper_triggered: false,
+        tamper_state: 0
+      });
+
+      res.json({
+        success: true,
+        data: status,
+        message: 'Estado de tamper reseteado correctamente'
+      });
+    } catch (error) {
+      console.error('Error reseteando tamper:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error reseteando tamper'
+      });
+    }
+  },
+
   // Desactivar sirena
   async deactivateSiren(req, res) {
     try {
@@ -240,6 +314,9 @@ const homeAlarmController = {
         user_id: userId,
         message: 'Sirena desactivada manualmente'
       });
+
+      // Enviar comando por MQTT a la central
+      mqttService.publishHomeAlarmCommand('siren', false);
 
       socketService.emit('home_alarm:status', status);
       socketService.emit('home_alarm:event', {
