@@ -367,34 +367,6 @@ const homeAlarmDeviceController = {
       });
     }
   }
-
-  // Obtener comandos pendientes (polling)
-  async getCommands(req, res) {
-    try {
-      const deviceId = req.deviceId;
-
-      // Obtener comandos pendientes desde la base de datos
-      // Por ahora, obtenemos el último comando desde el estado de la alarma
-      const status = await HomeAlarmModel.getStatus();
-      
-      // Aquí podrías implementar una cola de comandos en la BD
-      // Por ahora, retornamos que no hay comandos pendientes
-      // El backend enviará comandos cuando el usuario los ejecute desde la app
-      
-      res.json({
-        success: true,
-        has_command: false,
-        command: null,
-        value: null
-      });
-    } catch (error) {
-      console.error('Error obteniendo comandos:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Error obteniendo comandos'
-      });
-    }
-  }
 };
 
 module.exports = {
