@@ -51,12 +51,30 @@ const homeAlarmDeviceController = {
         timestamp 
       } = req.body;
 
+      // Debug: mostrar qué se está recibiendo
+      console.log(`📥 Estado recibido de ${deviceId}:`, {
+        alarm_armed,
+        siren_active,
+        siren_state,
+        tamper_state,
+        body: req.body
+      });
+
       // Actualizar estado en base de datos
       const db = require('../config/database');
       
       // Intentar actualizar con campos de tamper si existen, sino solo campos básicos
       try {
         // Primero intentar con todos los campos (incluyendo tamper)
+        // Asegurar que alarm_armed sea un booleano
+        const isArmed = alarm_armed === true || alarm_armed === 'true' || alarm_armed === 1;
+        const isSirenActive = siren_active === true || siren_active === 'true' || siren_active === 1;
+        
+        const statusValue = isArmed ? 'armed' : 'disarmed';
+        const sirenValue = isSirenActive ? 'on' : 'off';
+        
+        console.log(`💾 Actualizando BD: status=${statusValue}, siren_status=${sirenValue}, alarm_armed=${alarm_armed} (tipo: ${typeof alarm_armed})`);
+        
         await db.execute(
           `UPDATE home_alarm 
            SET status = ?, 
@@ -67,13 +85,15 @@ const homeAlarmDeviceController = {
                updated_at = NOW()
            WHERE id = 1`,
           [
-            alarm_armed ? 'armed' : 'disarmed',
-            siren_active ? 'on' : 'off',
+            statusValue,
+            sirenValue,
             tamper_triggered || false,
             tamper_state !== undefined ? tamper_state : 0,
             siren_state !== undefined ? siren_state : 0
           ]
         );
+        
+        console.log(`✅ Estado actualizado en BD: status=${statusValue}`);
       } catch (error) {
         // Si falla porque no existen las columnas, actualizar solo campos básicos
         if (error.code === 'ER_BAD_FIELD_ERROR') {

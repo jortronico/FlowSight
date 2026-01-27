@@ -37,6 +37,7 @@ bool tamperState = false;
 bool lastTamperState = true;
 bool sensorEscaleraTriggered = false;
 bool lastSensorEscaleraState = true;  // true = sin movimiento, false = movimiento
+bool sensorEscaleraInicializado = false;  // Flag para saber si ya se hizo la primera lectura
 
 // ================= TIMING =================
 unsigned long lastHeartbeat = 0;
@@ -117,6 +118,12 @@ bool sendHTTPPost(const char* endpoint, JsonDocument& doc) {
   // Preparar body JSON
   String body;
   serializeJson(doc, body);
+  
+  // Debug: mostrar qué se está enviando (solo para status)
+  if (String(endpoint).indexOf("status") >= 0) {
+    Serial.print("📤 Enviando status: ");
+    Serial.println(body);
+  }
   
   // Enviar petición HTTP POST
   if (useHTTPS) {
@@ -232,24 +239,18 @@ bool sendHTTPPost(const char* endpoint, JsonDocument& doc) {
 }
 
 void sendStatus() {
-  StaticJsonDocument<350> doc;
+  StaticJsonDocument<300> doc;
   doc["device_id"] = DEVICE_ID;
-  doc["armed"] = alarmArmed;
-  doc["siren"] = sirenState;
-  doc["tamper"] = tamperState;
+  doc["alarm_armed"] = alarmArmed;  // Campo que espera el backend
+  doc["siren_active"] = sirenState;  // Campo que espera el backend
+  doc["siren_state"] = sirenState;   // Campo adicional que espera el backend
+  doc["tamper_state"] = tamperState; // Campo que espera el backend
   doc["sensor_escalera"] = sensorEscaleraTriggered;  // Estado del sensor de escalera
   
   sendHTTPPost(API_STATUS, doc);
 }
 
-void handleSensorTrigger(bool triggered) {
-  // Si la alarma está armada y el sensor se activó, disparar alarma
-  if (alarmArmed && triggered) {
-    Serial.println("🚨 ALARMA DISPARADA - Sensor de escalera activado!");
-    sirenState = true;  // Activar sirena
-    sendStatus();  // Enviar estado actualizado inmediatamente
-  }
-}
+// Función eliminada - la lógica ahora está directamente en checkSensorEscalera()
 
 void sendHeartbeat() {
   StaticJsonDocument<300> doc;
@@ -274,23 +275,45 @@ void checkTamper() {
 
 void checkSensorEscalera() {
   // Leer pin del sensor (nivel bajo = movimiento detectado)
+  // Pin 34 es solo entrada, sin pull-up interno
   bool pinState = digitalRead(PIN_SENSOR_ESCALERA);
   bool movimientoDetectado = (pinState == LOW);  // LOW = movimiento
   
-  // Detectar cambio de estado
+  // Primera lectura: inicializar el estado sin disparar alarma
+  if (!sensorEscaleraInicializado) {
+    sensorEscaleraTriggered = movimientoDetectado;
+    lastSensorEscaleraState = pinState;
+    sensorEscaleraInicializado = true;
+    Serial.print("👁️ Sensor Escalera inicializado: ");
+    Serial.println(sensorEscaleraTriggered ? "MOVIMIENTO" : "SIN MOVIMIENTO");
+    return;  // Salir sin enviar status en primera lectura
+  }
+  
+  // Detectar cambio de estado (después de la inicialización)
   if (movimientoDetectado != sensorEscaleraTriggered) {
     sensorEscaleraTriggered = movimientoDetectado;
+    lastSensorEscaleraState = pinState;
     
     if (sensorEscaleraTriggered) {
       Serial.println("👁️ Sensor Escalera: MOVIMIENTO DETECTADO");
-      // Si la alarma está armada, disparar alarma
-      handleSensorTrigger(true);
+      Serial.printf("🔍 DEBUG: alarmArmed = %s\n", alarmArmed ? "true" : "false");
+      
+      // Solo disparar alarma si está armada
+      if (alarmArmed) {
+        Serial.println("🚨 ALARMA DISPARADA - Sensor de escalera activado!");
+        sirenState = true;  // Activar sirena
+        Serial.printf("🔍 DEBUG: sirenState = %s\n", sirenState ? "true" : "false");
+        sendStatus();  // Enviar estado actualizado inmediatamente
+      } else {
+        Serial.println("⚠️  Movimiento detectado pero alarma NO ARMADA - Sin acción");
+        // Enviar estado (sin disparar sirena) para que el panel vea el movimiento
+        sendStatus();
+      }
     } else {
       Serial.println("👁️ Sensor Escalera: Sin movimiento");
+      // Enviar estado actualizado al backend (incluye el estado del sensor)
+      sendStatus();
     }
-    
-    // Enviar estado actualizado al backend (incluye el estado del sensor)
-    sendStatus();
   }
 }
 
@@ -408,25 +431,40 @@ bool pollCommands() {
   
   // Parsear JSON de respuesta
   if (responseBody.length() > 0) {
+    Serial.printf("📄 Respuesta recibida: %s\n", responseBody.c_str());
     StaticJsonDocument<300> doc;
     DeserializationError error = deserializeJson(doc, responseBody);
     
-    if (!error && doc["success"].as<bool>() && doc["has_command"].as<bool>()) {
+    if (error) {
+      Serial.printf("❌ Error parseando JSON: %s\n", error.c_str());
+      return false;
+    }
+    
+    if (doc["success"].as<bool>() && doc["has_command"].as<bool>()) {
+      Serial.printf("🔍 DEBUG: Estado actual antes del comando - alarmArmed: %s\n", alarmArmed ? "true" : "false");
       String command = doc["command"].as<String>();
       bool value = doc["value"].as<bool>();
       int commandId = doc["command_id"] | 0;
       
-      Serial.printf("📥 Comando recibido: %s = %s\n", command.c_str(), value ? "true" : "false");
+      Serial.printf("📥 Comando recibido: %s = %s (command_id: %d)\n", command.c_str(), value ? "true" : "false", commandId);
       
       // Procesar comando
       if (command == "arm") {
-        alarmArmed = value;
-        Serial.printf("🔒 Alarma: %s\n", alarmArmed ? "ARMADA" : "DESARMADA");
+        // Solo armar si value es true
+        if (value) {
+          alarmArmed = true;
+          Serial.println("🔒 Alarma: ARMADA");
+        } else {
+          // Si value es false, desarmar
+          alarmArmed = false;
+          sirenState = false;  // Desactivar sirena al desarmar
+          Serial.println("🔓 Alarma: DESARMADA (por comando arm=false)");
+        }
         sendStatus();
       } else if (command == "disarm") {
         alarmArmed = false;
         sirenState = false;  // Desactivar sirena al desarmar
-        Serial.printf("🔓 Alarma: DESARMADA\n");
+        Serial.println("🔓 Alarma: DESARMADA");
         sendStatus();
       } else if (command == "siren") {
         sirenState = value;
@@ -437,6 +475,8 @@ bool pollCommands() {
         lastTamperState = true;
         Serial.println("🔄 Tamper reseteado");
         sendStatus();
+      } else {
+        Serial.printf("⚠️  Comando desconocido: %s\n", command.c_str());
       }
       
       return true;
@@ -455,6 +495,7 @@ void setup() {
   Serial.println("  Versión Simple (sin FreeRTOS)");
   Serial.println("========================================\n");
   
+  // Usar Serial.print en lugar de Serial.printf para evitar problemas
   Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
   Serial.printf("📦 Chip model: %s\n", ESP.getChipModel());
   Serial.println();
@@ -462,7 +503,7 @@ void setup() {
   pinMode(PIN_SIREN, OUTPUT);
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_TAMPER, INPUT_PULLUP);
-  pinMode(PIN_SENSOR_ESCALERA, INPUT_PULLUP);  // Sensor con pull-up interno
+  pinMode(PIN_SENSOR_ESCALERA, INPUT);  // Pin 34 es solo entrada, sin pull-up interno
   
   digitalWrite(PIN_SIREN, HIGH);
   digitalWrite(PIN_LED, LOW);
@@ -471,12 +512,10 @@ void setup() {
   lastTamperState = digitalRead(PIN_TAMPER);
   tamperState = !lastTamperState;
   
-  // Leer estado inicial del sensor de escalera
-  bool initialSensorState = digitalRead(PIN_SENSOR_ESCALERA);
-  sensorEscaleraTriggered = (initialSensorState == LOW);  // LOW = movimiento
-  lastSensorEscaleraState = initialSensorState;
-  
-  Serial.printf("👁️ Sensor Escalera inicial: %s\n", sensorEscaleraTriggered ? "MOVIMIENTO" : "SIN MOVIMIENTO");
+  // NO leer el sensor en setup() - se leerá en el loop() para evitar problemas
+  // El estado inicial se establecerá en la primera lectura del loop()
+  sensorEscaleraTriggered = false;
+  lastSensorEscaleraState = HIGH;  // Asumir HIGH inicialmente (sin movimiento)
   
   connectWiFi();
   
