@@ -53,23 +53,46 @@ const homeAlarmDeviceController = {
 
       // Actualizar estado en base de datos
       const db = require('../config/database');
-      await db.execute(
-        `UPDATE home_alarm 
-         SET status = ?, 
-             siren_status = ?,
-             tamper_triggered = ?,
-             tamper_state = ?,
-             siren_state = ?,
-             updated_at = NOW()
-         WHERE id = 1`,
-        [
-          alarm_armed ? 'armed' : 'disarmed',
-          siren_active ? 'on' : 'off',
-          tamper_triggered || false,
-          tamper_state !== undefined ? tamper_state : 0,
-          siren_state !== undefined ? siren_state : 0
-        ]
-      );
+      
+      // Intentar actualizar con campos de tamper si existen, sino solo campos básicos
+      try {
+        // Primero intentar con todos los campos (incluyendo tamper)
+        await db.execute(
+          `UPDATE home_alarm 
+           SET status = ?, 
+               siren_status = ?,
+               tamper_triggered = ?,
+               tamper_state = ?,
+               siren_state = ?,
+               updated_at = NOW()
+           WHERE id = 1`,
+          [
+            alarm_armed ? 'armed' : 'disarmed',
+            siren_active ? 'on' : 'off',
+            tamper_triggered || false,
+            tamper_state !== undefined ? tamper_state : 0,
+            siren_state !== undefined ? siren_state : 0
+          ]
+        );
+      } catch (error) {
+        // Si falla porque no existen las columnas, actualizar solo campos básicos
+        if (error.code === 'ER_BAD_FIELD_ERROR') {
+          console.log('⚠️ Campos de tamper no disponibles, usando solo campos básicos');
+          await db.execute(
+            `UPDATE home_alarm 
+             SET status = ?, 
+                 siren_status = ?,
+                 updated_at = NOW()
+             WHERE id = 1`,
+            [
+              alarm_armed ? 'armed' : 'disarmed',
+              siren_active ? 'on' : 'off'
+            ]
+          );
+        } else {
+          throw error; // Re-lanzar si es otro tipo de error
+        }
+      }
 
       // Obtener estado actualizado
       const status = await HomeAlarmModel.getStatus();
@@ -115,18 +138,31 @@ const homeAlarmDeviceController = {
         timestamp 
       } = req.body;
 
-      // Actualizar solo campos críticos
-      await db.execute(
-        `UPDATE home_alarm 
-         SET tamper_state = ?,
-             siren_state = ?,
-             updated_at = NOW()
-         WHERE id = 1`,
-        [
-          tamper_state !== undefined ? tamper_state : 0,
-          siren_state !== undefined ? siren_state : 0
-        ]
-      );
+      // Actualizar solo campos críticos (si existen)
+      try {
+        await db.execute(
+          `UPDATE home_alarm 
+           SET tamper_state = ?,
+               siren_state = ?,
+               updated_at = NOW()
+           WHERE id = 1`,
+          [
+            tamper_state !== undefined ? tamper_state : 0,
+            siren_state !== undefined ? siren_state : 0
+          ]
+        );
+      } catch (error) {
+        // Si los campos no existen, solo actualizar updated_at
+        if (error.code === 'ER_BAD_FIELD_ERROR') {
+          await db.execute(
+            `UPDATE home_alarm 
+             SET updated_at = NOW()
+             WHERE id = 1`
+          );
+        } else {
+          throw error;
+        }
+      }
 
       // Notificar por Socket.IO
       socketService.emit('home_alarm:heartbeat', {
@@ -201,15 +237,28 @@ const homeAlarmDeviceController = {
       }
       // Si es tamper
       else if (event_type && (event_type === 'tamper_activated' || event_type === 'tamper_restored')) {
-        // Actualizar estado de tamper
-        await db.execute(
-          `UPDATE home_alarm 
-           SET tamper_triggered = ?,
-               tamper_state = ?,
-               updated_at = NOW()
-           WHERE id = 1`,
-          [tamper_triggered || false, tamper_state !== undefined ? tamper_state : 0]
-        );
+        // Actualizar estado de tamper (si los campos existen)
+        try {
+          await db.execute(
+            `UPDATE home_alarm 
+             SET tamper_triggered = ?,
+                 tamper_state = ?,
+                 updated_at = NOW()
+             WHERE id = 1`,
+            [tamper_triggered || false, tamper_state !== undefined ? tamper_state : 0]
+          );
+        } catch (error) {
+          // Si los campos no existen, solo actualizar updated_at
+          if (error.code === 'ER_BAD_FIELD_ERROR') {
+            await db.execute(
+              `UPDATE home_alarm 
+               SET updated_at = NOW()
+               WHERE id = 1`
+            );
+          } else {
+            throw error;
+          }
+        }
 
         // Si tamper activado, activar sirena
         if (tamper_triggered) {
