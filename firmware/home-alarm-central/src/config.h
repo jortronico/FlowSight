@@ -11,7 +11,7 @@
 // ============================================
 // CONFIGURACIÓN MQTT
 // ============================================
-#define MQTT_BROKER "192.168.0.14"  // IP del servidor MQTT
+#define MQTT_BROKER "44.221.95.191"  // IP del servidor MQTT (AWS EC2 - api-alarma)
 #define MQTT_PORT 1883
 #define MQTT_USERNAME "flowsight"
 #define MQTT_PASSWORD "mqtt_password"

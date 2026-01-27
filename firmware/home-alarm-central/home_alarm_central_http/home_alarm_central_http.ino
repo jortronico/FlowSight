@@ -1,19 +1,27 @@
 /*
- * FlowSight - Central de Alarma
- * Firmware para ESP32 con FreeRTOS, WiFi, MQTT y ESP-NOW
+ * FlowSight - Central de Alarma (Versión HTTP)
+ * Firmware para ESP32 con FreeRTOS, WiFi, HTTP y ESP-NOW
  * 
  * Compatible con Arduino IDE
  * 
  * Hardware:
- * - GPIO 25: Sirena principal
- * - GPIO 26: LED de vigía (indica alarma activa)
+ * - GPIO 27: Sirena principal
+ * - GPIO 23: LED de vigía (indica alarma activa)
  * - GPIO 2: LED de estado WiFi (opcional)
+ * - GPIO 4: Tamper switch (sabotaje)
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+// Suprimir warnings de deprecación de ArduinoJson
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
+#pragma GCC diagnostic pop
+
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
@@ -42,25 +50,28 @@
 #define PRENDER_SIRENA_PRINCIPAL 0
 
 // ============================================
-// CONFIGURACIÓN WIFI Y MQTT
+// CONFIGURACIÓN WIFI Y HTTP
 // ============================================
 // ⚠️ IMPORTANTE: Configura estos valores según tu red
-const char* WIFI_SSID = "TU_WIFI_SSID";
-const char* WIFI_PASSWORD = "TU_WIFI_PASSWORD";
-const char* MQTT_BROKER = "192.168.0.14";  // IP del broker MQTT
-const int MQTT_PORT = 1883;
-const char* MQTT_USERNAME = "flowsight";
-const char* MQTT_PASSWORD = "mqtt_password";
+
+const char* WIFI_SSID = "Fibertel WiFi649 2.4GHz";
+const char* WIFI_PASSWORD = "0042237126";
+const char* API_BASE_URL = "https://puntopedido.com.ar";  // URL del backend
+const char* API_KEY = "device_api_key_here";  // API Key para autenticación del dispositivo
 const char* DEVICE_ID = "home_alarm_central_001";  // ID único de esta central
 
-// ============================================
-// TOPICS MQTT
-// ============================================
-const char* TOPIC_STATUS = "flowsight/home-alarm/central/status";
-const char* TOPIC_COMMAND = "flowsight/home-alarm/central/command";
-const char* TOPIC_SENSOR_DATA = "flowsight/home-alarm/sensors/data";
-const char* TOPIC_ALARM_TRIGGER = "flowsight/home-alarm/central/trigger";
-const char* TOPIC_HEARTBEAT = "flowsight/home-alarm/central/heartbeat";
+// URLs de los endpoints
+const char* API_STATUS = "/api/home-alarm/device/status";
+const char* API_HEARTBEAT = "/api/home-alarm/device/heartbeat";
+const char* API_TRIGGER = "/api/home-alarm/device/trigger";
+const char* API_SENSOR_DATA = "/api/home-alarm/device/sensor-data";
+const char* API_COMMANDS = "/api/home-alarm/device/commands";
+
+// Configuración HTTP
+const int HTTP_TIMEOUT = 10000;  // 10 segundos
+const int COMMAND_POLL_INTERVAL = 5000;  // Polling cada 5 segundos
+const int HEARTBEAT_INTERVAL = 60000;  // Heartbeat cada 60 segundos
+const int STATUS_UPDATE_INTERVAL = 30000;  // Actualizar estado cada 30 segundos
 
 // ============================================
 // ESTRUCTURAS DE DATOS
@@ -77,54 +88,57 @@ typedef struct {
   char command[20];
   bool value;
   unsigned long timestamp;
-} MQTTCommand;
+} HTTPCommand;
 
 // ============================================
 // VARIABLES GLOBALES
 // ============================================
-WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
+WiFiClientSecure wifiClientSecure;
+HTTPClient http;
 
 // Estado del sistema
 bool alarmArmed = false;
 uint8_t sirenState = ESTADO_SIRENA_PRINCIPAL_OFF;
 bool ledVigiaState = false;
 uint8_t tamperState = ESTADO_TAMPER_OFF;
-uint8_t lastTamperState = ESTADO_TAMPER_OFF;  // Estado anterior del tamper
+bool lastTamperState = true;  // true = cerrado (normal), false = abierto (tamper)
 unsigned long lastHeartbeat = 0;
-unsigned long lastSensorCheck = 0;
+unsigned long lastStatusUpdate = 0;
+unsigned long lastCommandPoll = 0;
 
 // Colas FreeRTOS
 QueueHandle_t sensorQueue;
-QueueHandle_t mqttCommandQueue;
+QueueHandle_t httpCommandQueue;
 SemaphoreHandle_t stateMutex;
 
 // MAC addresses de los sensores (configurar según tus sensores)
-// ⚠️ IMPORTANTE: Obtén las MAC de tus sensores y configura aquí
 uint8_t sensorEscaleraMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
 uint8_t sensorSalaMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02};
 
 // ============================================
 // PROTOTIPOS DE FUNCIONES
 // ============================================
-void taskWiFiMQTT(void* parameter);
+void taskWiFiHTTP(void* parameter);
 void taskESPNow(void* parameter);
 void taskSirenControl(void* parameter);
 void taskLEDControl(void* parameter);
 void taskAlarmLogic(void* parameter);
 void taskHeartbeat(void* parameter);
 void taskTamperMonitor(void* parameter);
+void taskCommandPoll(void* parameter);
 
 void connectWiFi();
-void connectMQTT();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
-void publishStatus();
-void publishSensorTrigger(uint8_t sensorId, bool triggered);
-void publishTamperTrigger(bool triggered);
-void processMQTTCommand(const char* command, bool value);
+bool sendHTTPPost(const char* endpoint, JsonDocument& doc);
+bool sendHTTPGet(const char* endpoint, JsonDocument& responseDoc);
+void sendStatus();
+void sendHeartbeat();
+void sendSensorTrigger(uint8_t sensorId, bool triggered);
+void sendTamperTrigger(bool triggered);
+void processHTTPCommand(const char* command, bool value);
+void pollCommands();
 
 void setupESPNow();
-void onESPNowRecv(const uint8_t* mac, const uint8_t* data, int len);
+void onESPNowRecv(const esp_now_recv_info* recv_info, const uint8_t* data, int len);
 void onESPNowSent(const uint8_t* mac, esp_now_send_status_t status);
 
 // ============================================
@@ -135,40 +149,46 @@ void setup() {
   delay(1000);
   
   Serial.println("\n\n========================================");
-  Serial.println("  FLOWSIGHT - Central de Alarma");
-  Serial.println("  ESP32 + FreeRTOS + ESP-NOW");
+  Serial.println("  FLOWSIGHT - Central de Alarma (HTTP)");
+  Serial.println("  ESP32 + FreeRTOS + ESP-NOW + HTTP");
   Serial.println("========================================\n");
 
   // Configurar pines
   pinMode(PIN_SIREN, OUTPUT);
   pinMode(PIN_LED_VIGIA, OUTPUT);
   pinMode(PIN_LED_STATUS, OUTPUT);
-  pinMode(PIN_TAMPER, INPUT_PULLUP);  // Tamper con pull-up interno
-  digitalWrite(PIN_SIREN, APAGAR_SIRENA_PRINCIPAL);  // Inicializar sirena apagada
+  pinMode(PIN_TAMPER, INPUT_PULLUP);
+  digitalWrite(PIN_SIREN, APAGAR_SIRENA_PRINCIPAL);
   digitalWrite(PIN_LED_VIGIA, LOW);
   digitalWrite(PIN_LED_STATUS, LOW);
   
   // Leer estado inicial del tamper
-  // Con INPUT_PULLUP: HIGH = switch cerrado (normal), LOW = switch abierto (tamper)
-  lastTamperState = (digitalRead(PIN_TAMPER) == HIGH) ? ESTADO_TAMPER_OFF : ESTADO_TAMPER_ON;
+  lastTamperState = (digitalRead(PIN_TAMPER) == HIGH);
 
   // Crear colas y semáforos
   sensorQueue = xQueueCreate(10, sizeof(SensorData));
-  mqttCommandQueue = xQueueCreate(10, sizeof(MQTTCommand));
+  httpCommandQueue = xQueueCreate(10, sizeof(HTTPCommand));
   stateMutex = xSemaphoreCreateMutex();
 
-  if (!sensorQueue || !mqttCommandQueue || !stateMutex) {
+  if (!sensorQueue || !httpCommandQueue || !stateMutex) {
     Serial.println("❌ Error creando colas/semáforos");
     while(1) delay(1000);
   }
+
+  // Configurar HTTPClient
+  http.setTimeout(HTTP_TIMEOUT);
+  http.setReuse(true);
+
+  // Configurar WiFiClientSecure (para HTTPS)
+  wifiClientSecure.setInsecure();  // Deshabilitar verificación de certificado (desarrollo)
 
   // Configurar ESP-NOW
   setupESPNow();
 
   // Crear tareas FreeRTOS
   xTaskCreatePinnedToCore(
-    taskWiFiMQTT,
-    "WiFiMQTT",
+    taskWiFiHTTP,
+    "WiFiHTTP",
     8192,
     NULL,
     2,
@@ -231,21 +251,33 @@ void setup() {
     "TamperMon",
     2048,
     NULL,
-    4,  // Alta prioridad
+    4,
     NULL,
     0  // Core 0
+  );
+
+  xTaskCreatePinnedToCore(
+    taskCommandPoll,
+    "CmdPoll",
+    4096,
+    NULL,
+    2,
+    NULL,
+    1  // Core 1
   );
 
   Serial.println("✅ Sistema iniciado - Tareas FreeRTOS creadas");
   Serial.println("📡 Esperando conexión WiFi...");
   
   // Verificar estado inicial del tamper
-  if (lastTamperState == ESTADO_TAMPER_ON) {
+  if (!lastTamperState) {
     Serial.println("⚠️ TAMPER ACTIVO al iniciar!");
-    tamperState = ESTADO_TAMPER_ON;
-    sirenState = ESTADO_SIRENA_PRINCIPAL_ON;
-    digitalWrite(PIN_SIREN, PRENDER_SIRENA_PRINCIPAL);
-    publishTamperTrigger(true);
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      tamperState = ESTADO_TAMPER_ON;
+      sirenState = ESTADO_SIRENA_PRINCIPAL_ON;
+      xSemaphoreGive(stateMutex);
+    }
+    sendTamperTrigger(true);
   }
 }
 
@@ -253,40 +285,37 @@ void setup() {
 // LOOP (no usado, todo en FreeRTOS)
 // ============================================
 void loop() {
-  vTaskDelay(pdMS_TO_TICKS(10000));  // Delay largo, no se usa
+  vTaskDelay(pdMS_TO_TICKS(10000));
 }
 
 // ============================================
-// TAREA: WiFi y MQTT
+// TAREA: WiFi y HTTP
 // ============================================
-void taskWiFiMQTT(void* parameter) {
+void taskWiFiHTTP(void* parameter) {
   connectWiFi();
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
-  connectMQTT();
-
-  TickType_t lastReconnect = 0;
-  const TickType_t reconnectInterval = pdMS_TO_TICKS(5000);
+  
+  // Esperar después de conectar WiFi
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  
+  // Enviar estado inicial
+  sendStatus();
 
   while (true) {
-    if (!mqttClient.connected()) {
-      TickType_t now = xTaskGetTickCount();
-      if (now - lastReconnect > reconnectInterval) {
-        lastReconnect = now;
-        connectMQTT();
-      }
-    } else {
-      mqttClient.loop();
+    // Verificar conexión WiFi
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("⚠️ WiFi desconectado, reconectando...");
+      connectWiFi();
+      vTaskDelay(pdMS_TO_TICKS(5000));
     }
 
-    // Publicar estado periódicamente
-    static unsigned long lastStatus = 0;
-    if (millis() - lastStatus > 30000) {  // Cada 30 segundos
-      publishStatus();
-      lastStatus = millis();
+    // Enviar estado periódicamente
+    unsigned long now = millis();
+    if (now - lastStatusUpdate > STATUS_UPDATE_INTERVAL) {
+      sendStatus();
+      lastStatusUpdate = now;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
@@ -298,30 +327,25 @@ void taskESPNow(void* parameter) {
     SensorData sensorData;
     
     if (xQueueReceive(sensorQueue, &sensorData, pdMS_TO_TICKS(100)) == pdTRUE) {
-      // Procesar datos del sensor
       Serial.printf("📡 Sensor %d - Triggered: %s, RSSI: %d\n", 
                     sensorData.sensor_id, 
                     sensorData.triggered ? "SI" : "NO",
                     sensorData.rssi);
 
-      // Publicar por MQTT
-      if (mqttClient.connected()) {
-        StaticJsonDocument<200> doc;
-        doc["sensor_id"] = sensorData.sensor_id;
-        doc["sensor_name"] = (sensorData.sensor_id == 1) ? "escalera" : "sala_entrada";
-        doc["triggered"] = sensorData.triggered;
-        doc["rssi"] = sensorData.rssi;
-        doc["timestamp"] = sensorData.timestamp;
-        doc["device_id"] = DEVICE_ID;
+      // Enviar datos del sensor por HTTP
+      StaticJsonDocument<200> doc;
+      doc["device_id"] = DEVICE_ID;
+      doc["sensor_id"] = sensorData.sensor_id;
+      doc["sensor_name"] = (sensorData.sensor_id == 1) ? "escalera" : "sala_entrada";
+      doc["triggered"] = sensorData.triggered;
+      doc["rssi"] = sensorData.rssi;
+      doc["timestamp"] = sensorData.timestamp;
 
-        char buffer[200];
-        serializeJson(doc, buffer);
-        mqttClient.publish(TOPIC_SENSOR_DATA, buffer);
+      sendHTTPPost(API_SENSOR_DATA, doc);
 
-        // Si la alarma está armada y el sensor se activó, disparar alarma
-        if (alarmArmed && sensorData.triggered) {
-          publishSensorTrigger(sensorData.sensor_id, true);
-        }
+      // Si la alarma está armada y el sensor se activó, disparar alarma
+      if (alarmArmed && sensorData.triggered) {
+        sendSensorTrigger(sensorData.sensor_id, true);
       }
     }
 
@@ -336,7 +360,6 @@ void taskSirenControl(void* parameter) {
   while (true) {
     if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
       if (sirenState == ESTADO_SIRENA_PRINCIPAL_ON) {
-        // Sirena activa: patrón intermitente
         digitalWrite(PIN_SIREN, PRENDER_SIRENA_PRINCIPAL);
         vTaskDelay(pdMS_TO_TICKS(500));
         digitalWrite(PIN_SIREN, APAGAR_SIRENA_PRINCIPAL);
@@ -356,8 +379,7 @@ void taskSirenControl(void* parameter) {
 void taskLEDControl(void* parameter) {
   while (true) {
     if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      if (alarmArmed) {
-        // LED parpadea cuando alarma está armada
+      if (alarmArmed || sirenState == ESTADO_SIRENA_PRINCIPAL_ON || tamperState == ESTADO_TAMPER_ON) {
         ledVigiaState = !ledVigiaState;
         digitalWrite(PIN_LED_VIGIA, ledVigiaState);
       } else {
@@ -366,7 +388,7 @@ void taskLEDControl(void* parameter) {
       }
       xSemaphoreGive(stateMutex);
     }
-    vTaskDelay(pdMS_TO_TICKS(1000));  // Parpadeo cada 1 segundo
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
@@ -374,18 +396,12 @@ void taskLEDControl(void* parameter) {
 // TAREA: Lógica de Alarma
 // ============================================
 void taskAlarmLogic(void* parameter) {
-  MQTTCommand cmd;
+  HTTPCommand cmd;
   
   while (true) {
-    // Procesar comandos MQTT
-    if (xQueueReceive(mqttCommandQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
-      processMQTTCommand(cmd.command, cmd.value);
-    }
-
-    // Verificar sensores si la alarma está armada
-    if (alarmArmed) {
-      // La lógica de detección se maneja en taskESPNow
-      // Aquí solo verificamos estado general
+    // Procesar comandos HTTP
+    if (xQueueReceive(httpCommandQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
+      processHTTPCommand(cmd.command, cmd.value);
     }
 
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -397,24 +413,8 @@ void taskAlarmLogic(void* parameter) {
 // ============================================
 void taskHeartbeat(void* parameter) {
   while (true) {
-    if (mqttClient.connected()) {
-      StaticJsonDocument<150> doc;
-      doc["device_id"] = DEVICE_ID;
-      doc["alarm_armed"] = alarmArmed;
-      doc["siren_active"] = (sirenState == ESTADO_SIRENA_PRINCIPAL_ON);
-      doc["siren_state"] = sirenState;
-      doc["tamper_triggered"] = (tamperState == ESTADO_TAMPER_ON);
-      doc["tamper_state"] = tamperState;
-      doc["wifi_rssi"] = WiFi.RSSI();
-      doc["uptime"] = millis() / 1000;
-      doc["timestamp"] = millis();
-
-      char buffer[150];
-      serializeJson(doc, buffer);
-      mqttClient.publish(TOPIC_HEARTBEAT, buffer);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(60000));  // Cada 60 segundos
+    sendHeartbeat();
+    vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_INTERVAL));
   }
 }
 
@@ -422,48 +422,36 @@ void taskHeartbeat(void* parameter) {
 // TAREA: Monitoreo de Tamper
 // ============================================
 void taskTamperMonitor(void* parameter) {
-  const TickType_t checkInterval = pdMS_TO_TICKS(100);  // Verificar cada 100ms
+  const TickType_t checkInterval = pdMS_TO_TICKS(100);
   
   while (true) {
-    // Leer estado del tamper
-    // Con INPUT_PULLUP: HIGH = switch cerrado (normal), LOW = switch abierto (tamper)
     bool pinState = digitalRead(PIN_TAMPER);
     uint8_t currentTamperState = (pinState == HIGH) ? ESTADO_TAMPER_OFF : ESTADO_TAMPER_ON;
     
-    // Detectar cambio de estado
     if (currentTamperState != lastTamperState) {
-      // Cambio detectado
       if (currentTamperState == ESTADO_TAMPER_ON) {
-        // Tamper activado (switch abierto)
-        Serial.println("🚨 TAMPER ACTIVADO! - Switch de sabotaje detectado");
+        Serial.println("🚨 TAMPER ACTIVADO!");
         
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
           tamperState = ESTADO_TAMPER_ON;
-          sirenState = ESTADO_SIRENA_PRINCIPAL_ON;  // Activar sirena inmediatamente
+          sirenState = ESTADO_SIRENA_PRINCIPAL_ON;
           xSemaphoreGive(stateMutex);
         }
         
-        // Publicar evento por MQTT
-        publishTamperTrigger(true);
-        
+        sendTamperTrigger(true);
       } else {
-        // Tamper restaurado (switch cerrado de nuevo)
         Serial.println("✅ Tamper restaurado");
         
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
           tamperState = ESTADO_TAMPER_OFF;
-          // No desactivar sirena automáticamente, debe hacerse manualmente
           xSemaphoreGive(stateMutex);
         }
         
-        // Publicar evento de restauración
-        publishTamperTrigger(false);
+        sendTamperTrigger(false);
       }
       
-      lastTamperState = currentTamperState;
-      
-      // Publicar estado actualizado
-      publishStatus();
+      lastTamperState = (currentTamperState == ESTADO_TAMPER_OFF);
+      sendStatus();
     }
     
     vTaskDelay(checkInterval);
@@ -471,7 +459,19 @@ void taskTamperMonitor(void* parameter) {
 }
 
 // ============================================
-// FUNCIONES WiFi/MQTT
+// TAREA: Polling de Comandos
+// ============================================
+void taskCommandPoll(void* parameter) {
+  while (true) {
+    if (WiFi.status() == WL_CONNECTED) {
+      pollCommands();
+    }
+    vTaskDelay(pdMS_TO_TICKS(COMMAND_POLL_INTERVAL));
+  }
+}
+
+// ============================================
+// FUNCIONES WiFi/HTTP
 // ============================================
 void connectWiFi() {
   Serial.print("📶 Conectando a WiFi: ");
@@ -499,72 +499,73 @@ void connectWiFi() {
   }
 }
 
-void connectMQTT() {
-  if (mqttClient.connected()) return;
+bool sendHTTPPost(const char* endpoint, JsonDocument& doc) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
 
-  Serial.print("🔌 Conectando a MQTT...");
+  String url = String(API_BASE_URL) + String(endpoint);
   
-  String clientId = "home_alarm_central_";
-  clientId += String(random(0xffff), HEX);
+  http.begin(wifiClientSecure, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("X-Device-ID", DEVICE_ID);
 
-  if (mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
-    Serial.println(" ✅ MQTT conectado!");
-    mqttClient.subscribe(TOPIC_COMMAND);
-    Serial.print("📥 Suscrito a: ");
-    Serial.println(TOPIC_COMMAND);
-    
-    // Publicar estado inicial
-    publishStatus();
+  String jsonString;
+  serializeJson(doc, jsonString);
+
+  int httpCode = http.POST(jsonString);
+
+  bool success = (httpCode == 200 || httpCode == 201);
+  
+  if (success) {
+    Serial.printf("✅ HTTP POST %s: %d\n", endpoint, httpCode);
   } else {
-    Serial.print(" ❌ Error: ");
-    Serial.println(mqttClient.state());
-  }
-}
-
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  payload[length] = '\0';
-  String message = String((char*)payload);
-
-  Serial.print("📨 MQTT recibido [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  Serial.println(message);
-
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, message);
-
-  if (error) {
-    Serial.print("❌ Error parseando JSON: ");
-    Serial.println(error.c_str());
-    return;
-  }
-
-  // Procesar comandos
-  if (strcmp(topic, TOPIC_COMMAND) == 0) {
-    MQTTCommand cmd;
-    
-    if (doc.containsKey("command")) {
-      strncpy(cmd.command, doc["command"], sizeof(cmd.command) - 1);
-      cmd.command[sizeof(cmd.command) - 1] = '\0';
-      
-      if (doc.containsKey("value")) {
-        cmd.value = doc["value"];
-      } else {
-        cmd.value = true;
-      }
-      
-      cmd.timestamp = millis();
-      
-      if (xQueueSend(mqttCommandQueue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Serial.println("⚠️ Cola de comandos llena");
-      }
+    Serial.printf("❌ HTTP POST %s: %d\n", endpoint, httpCode);
+    if (httpCode > 0) {
+      String response = http.getString();
+      Serial.printf("   Respuesta: %s\n", response.c_str());
     }
   }
+
+  http.end();
+  return success;
 }
 
-void publishStatus() {
-  if (!mqttClient.connected()) return;
+bool sendHTTPGet(const char* endpoint, JsonDocument& responseDoc) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
 
+  String url = String(API_BASE_URL) + String(endpoint);
+  
+  http.begin(wifiClientSecure, url);
+  http.addHeader("X-API-Key", API_KEY);
+  http.addHeader("X-Device-ID", DEVICE_ID);
+
+  int httpCode = http.GET();
+
+  bool success = (httpCode == 200);
+  
+  if (success) {
+    String response = http.getString();
+    DeserializationError error = deserializeJson(responseDoc, response);
+    
+    if (error) {
+      Serial.printf("❌ Error parseando JSON: %s\n", error.c_str());
+      success = false;
+    } else {
+      Serial.printf("✅ HTTP GET %s: %d\n", endpoint, httpCode);
+    }
+  } else {
+    Serial.printf("❌ HTTP GET %s: %d\n", endpoint, httpCode);
+  }
+
+  http.end();
+  return success;
+}
+
+void sendStatus() {
   StaticJsonDocument<350> doc;
   doc["device_id"] = DEVICE_ID;
   doc["alarm_armed"] = alarmArmed;
@@ -577,14 +578,25 @@ void publishStatus() {
   doc["free_heap"] = ESP.getFreeHeap();
   doc["timestamp"] = millis();
 
-  char buffer[350];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_STATUS, buffer);
+  sendHTTPPost(API_STATUS, doc);
 }
 
-void publishSensorTrigger(uint8_t sensorId, bool triggered) {
-  if (!mqttClient.connected()) return;
+void sendHeartbeat() {
+  StaticJsonDocument<200> doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["alarm_armed"] = alarmArmed;
+  doc["siren_active"] = (sirenState == ESTADO_SIRENA_PRINCIPAL_ON);
+  doc["siren_state"] = sirenState;
+  doc["tamper_triggered"] = (tamperState == ESTADO_TAMPER_ON);
+  doc["tamper_state"] = tamperState;
+  doc["wifi_rssi"] = WiFi.RSSI();
+  doc["uptime"] = millis() / 1000;
+  doc["timestamp"] = millis();
 
+  sendHTTPPost(API_HEARTBEAT, doc);
+}
+
+void sendSensorTrigger(uint8_t sensorId, bool triggered) {
   StaticJsonDocument<200> doc;
   doc["device_id"] = DEVICE_ID;
   doc["sensor_id"] = sensorId;
@@ -593,9 +605,7 @@ void publishSensorTrigger(uint8_t sensorId, bool triggered) {
   doc["alarm_armed"] = alarmArmed;
   doc["timestamp"] = millis();
 
-  char buffer[200];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_ALARM_TRIGGER, buffer);
+  sendHTTPPost(API_TRIGGER, doc);
 
   // Activar sirena si está armada
   if (alarmArmed && triggered) {
@@ -606,9 +616,7 @@ void publishSensorTrigger(uint8_t sensorId, bool triggered) {
   }
 }
 
-void publishTamperTrigger(bool triggered) {
-  if (!mqttClient.connected()) return;
-
+void sendTamperTrigger(bool triggered) {
   StaticJsonDocument<250> doc;
   doc["device_id"] = DEVICE_ID;
   doc["event_type"] = triggered ? "tamper_activated" : "tamper_restored";
@@ -618,31 +626,72 @@ void publishTamperTrigger(bool triggered) {
   doc["message"] = triggered ? "Tamper switch activado - Sabotaje detectado" : "Tamper switch restaurado";
   doc["timestamp"] = millis();
 
-  char buffer[250];
-  serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_ALARM_TRIGGER, buffer);
-  
-  Serial.printf("📤 Evento tamper publicado: %s\n", triggered ? "ACTIVADO" : "RESTAURADO");
+  sendHTTPPost(API_TRIGGER, doc);
 }
 
-void processMQTTCommand(const char* command, bool value) {
-  Serial.printf("⚙️ Procesando comando: %s = %s\n", command, value ? "true" : "false");
-
-  if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-    if (strcmp(command, "arm") == 0) {
-      alarmArmed = value;
-      Serial.println(value ? "🔒 Alarma ARMADA" : "🔓 Alarma DESARMADA");
-    } else if (strcmp(command, "siren") == 0) {
-      sirenState = value ? ESTADO_SIRENA_PRINCIPAL_ON : ESTADO_SIRENA_PRINCIPAL_OFF;
-      Serial.println(value ? "🚨 Sirena ACTIVADA" : "🔇 Sirena DESACTIVADA");
-    } else if (strcmp(command, "reset_tamper") == 0) {
-      // Comando para resetear estado de tamper (después de verificación)
-      tamperState = ESTADO_TAMPER_OFF;
-      Serial.println("✅ Estado tamper reseteado");
+void pollCommands() {
+  StaticJsonDocument<200> responseDoc;
+  
+  if (sendHTTPGet(API_COMMANDS, responseDoc)) {
+    if (responseDoc["has_command"].is<bool>() && responseDoc["has_command"]) {
+      HTTPCommand cmd;
+      
+      if (responseDoc["command"].is<const char*>()) {
+        strncpy(cmd.command, responseDoc["command"], sizeof(cmd.command) - 1);
+        cmd.command[sizeof(cmd.command) - 1] = '\0';
+        
+        if (responseDoc["value"].is<bool>()) {
+          cmd.value = responseDoc["value"];
+        } else {
+          cmd.value = true;
+        }
+        
+        cmd.timestamp = millis();
+        
+        if (xQueueSend(httpCommandQueue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+          Serial.println("⚠️ Cola de comandos llena");
+        } else {
+          Serial.printf("📥 Comando recibido: %s = %s\n", cmd.command, cmd.value ? "true" : "false");
+        }
+      }
     }
-    xSemaphoreGive(stateMutex);
-    
-    publishStatus();
+  }
+}
+
+void processHTTPCommand(const char* command, bool value) {
+  Serial.printf("🔧 Procesando comando: %s = %s\n", command, value ? "true" : "false");
+
+  if (strcmp(command, "arm") == 0) {
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      alarmArmed = value;
+      xSemaphoreGive(stateMutex);
+    }
+    sendStatus();
+  }
+  else if (strcmp(command, "disarm") == 0) {
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      alarmArmed = false;
+      if (sirenState == ESTADO_SIRENA_PRINCIPAL_ON) {
+        sirenState = ESTADO_SIRENA_PRINCIPAL_OFF;
+      }
+      xSemaphoreGive(stateMutex);
+    }
+    sendStatus();
+  }
+  else if (strcmp(command, "siren") == 0) {
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      sirenState = value ? ESTADO_SIRENA_PRINCIPAL_ON : ESTADO_SIRENA_PRINCIPAL_OFF;
+      xSemaphoreGive(stateMutex);
+    }
+    sendStatus();
+  }
+  else if (strcmp(command, "reset_tamper") == 0) {
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      tamperState = ESTADO_TAMPER_OFF;
+      lastTamperState = true;  // Resetear estado
+      xSemaphoreGive(stateMutex);
+    }
+    sendStatus();
   }
 }
 
@@ -650,8 +699,6 @@ void processMQTTCommand(const char* command, bool value) {
 // FUNCIONES ESP-NOW
 // ============================================
 void setupESPNow() {
-  WiFi.mode(WIFI_STA);
-  
   if (esp_now_init() != ESP_OK) {
     Serial.println("❌ Error inicializando ESP-NOW");
     return;
@@ -660,12 +707,10 @@ void setupESPNow() {
   esp_now_register_recv_cb(onESPNowRecv);
   esp_now_register_send_cb(onESPNowSent);
 
-  // Agregar peers (sensores)
   esp_now_peer_info_t peerInfo;
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
-  // Sensor escalera
   memcpy(peerInfo.peer_addr, sensorEscaleraMAC, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("❌ Error agregando peer escalera");
@@ -673,21 +718,20 @@ void setupESPNow() {
     Serial.println("✅ Peer escalera agregado");
   }
 
-  // Sensor sala entrada
   memcpy(peerInfo.peer_addr, sensorSalaMAC, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("❌ Error agregando peer sala");
   } else {
     Serial.println("✅ Peer sala agregado");
   }
-
-  Serial.println("✅ ESP-NOW inicializado");
 }
 
-void onESPNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
-  if (len != sizeof(SensorData) - 6) {  // -6 porque no enviamos MAC en el payload
+void onESPNowRecv(const esp_now_recv_info* recv_info, const uint8_t* data, int len) {
+  if (len != sizeof(SensorData) - 6) {
     return;
   }
+
+  const uint8_t* mac = recv_info->src_addr;
 
   SensorData sensorData;
   memcpy(sensorData.mac, mac, 6);
@@ -696,19 +740,17 @@ void onESPNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
   memcpy(&sensorData.rssi, data + sizeof(bool) + sizeof(uint8_t), sizeof(int));
   sensorData.timestamp = millis();
 
-  // Identificar sensor por MAC
   if (memcmp(mac, sensorEscaleraMAC, 6) == 0) {
     sensorData.sensor_id = 1;
   } else if (memcmp(mac, sensorSalaMAC, 6) == 0) {
     sensorData.sensor_id = 2;
   }
 
-  // Enviar a cola
   if (xQueueSend(sensorQueue, &sensorData, 0) != pdTRUE) {
     Serial.println("⚠️ Cola de sensores llena");
   }
 }
 
 void onESPNowSent(const uint8_t* mac, esp_now_send_status_t status) {
-  // Callback opcional para confirmación de envío
+  // Callback opcional
 }

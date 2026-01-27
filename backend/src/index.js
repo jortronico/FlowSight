@@ -16,6 +16,7 @@ const valveRoutes = require('./routes/valve.routes');
 const deviceRoutes = require('./routes/device.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
 const homeAlarmRoutes = require('./routes/homeAlarm.routes');
+const homeAlarmDeviceRoutes = require('./routes/homeAlarmDevice.routes');
 
 // Importar servicios
 const mqttService = require('./services/mqtt.service');
@@ -28,7 +29,7 @@ const server = http.createServer(app);
 app.set('trust proxy', true);
 
 // Configurar origen permitido (usar variable de entorno o dominio por defecto)
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://alarma.puntopedido.com.ar';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://puntopedido.com.ar';
 
 // Configurar Socket.IO
 const io = new Server(server, {
@@ -60,6 +61,8 @@ app.use('/api/valves', valveRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/home-alarm', homeAlarmRoutes);
+app.use('/api/home-alarm/device', homeAlarmDeviceRoutes);
+app.use('/api/home-alarm/device', homeAlarmDeviceRoutes);
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {

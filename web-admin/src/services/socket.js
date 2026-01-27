@@ -6,7 +6,7 @@ import { useHomeAlarmStore } from '../stores/homeAlarmStore';
 // Socket.IO necesita la URL base sin /api
 const getSocketURL = () => {
   const apiUrl = import.meta.env.VITE_API_URL || 
-    (import.meta.env.DEV ? 'http://localhost:3001' : 'https://alarma.puntopedido.com.ar');
+    (import.meta.env.DEV ? 'http://localhost:3001' : 'https://puntopedido.com.ar');
   // Remover /api si está presente para Socket.IO
   return apiUrl.replace(/\/api$/, '');
 };

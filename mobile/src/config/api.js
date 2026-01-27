@@ -9,7 +9,7 @@
  */
 
 // URL base del backend
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://alarma.puntopedido.com.ar';
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://puntopedido.com.ar';
 
 // URL completa de la API
 export const API_URL = `${API_BASE_URL}/api`;

@@ -1,7 +1,27 @@
+/*
+ * FlowSight - Central de Alarma
+ * Firmware para ESP32 con FreeRTOS, WiFi, MQTT y ESP-NOW
+ * 
+ * Compatible con Arduino IDE
+ * 
+ * Hardware:
+ * - GPIO 25: Sirena principal
+ * - GPIO 26: LED de vigía (indica alarma activa)
+ * - GPIO 2: LED de estado WiFi (opcional)
+ */
+
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+
+// Suprimir warnings de deprecación de ArduinoJson antes de incluirlo
+// StaticJsonDocument sigue siendo la mejor opción para ESP32 (memoria estática)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <ArduinoJson.h>
+#pragma GCC diagnostic pop
+
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
@@ -12,8 +32,8 @@
 // ============================================
 // CONFIGURACIÓN DE PINES
 // ============================================
-#define PIN_SIREN 25          // GPIO 25 - Sirena principal
-#define PIN_LED_VIGIA 26      // GPIO 26 - LED de vigía (indica alarma activa)
+#define PIN_SIREN 27          // GPIO 27 - Sirena principal
+#define PIN_LED_VIGIA 23      // GPIO 23 - LED de vigía (indica alarma activa)
 #define PIN_LED_STATUS 2      // GPIO 2 - LED de estado WiFi (opcional)
 #define PIN_TAMPER 4          // GPIO 4 - Tamper switch (sabotaje)
 
@@ -32,13 +52,20 @@
 // ============================================
 // CONFIGURACIÓN WIFI Y MQTT
 // ============================================
-const char* WIFI_SSID = "TU_WIFI_SSID";
-const char* WIFI_PASSWORD = "TU_WIFI_PASSWORD";
+// ⚠️ IMPORTANTE: Configura estos valores según tu red
+
+const char* WIFI_SSID = "Fibertel WiFi649 2.4GHz";
+const char* WIFI_PASSWORD = "0042237126";
 const char* MQTT_BROKER = "44.221.95.191";  // IP del broker MQTT (AWS EC2 - api-alarma)
-const int MQTT_PORT = 1883;
-const char* MQTT_USERNAME = "flowsight";
-const char* MQTT_PASSWORD = "mqtt_password";
+const int MQTT_PORT = 8883;  // Puerto TLS/SSL para MQTT
+const bool MQTT_USE_TLS = true;  // Habilitar TLS/SSL
+const char* MQTT_USERNAME = "flowsight";  // Usuario MQTT (por dispositivo)
+const char* MQTT_PASSWORD = "mqtt_password";  // Contraseña MQTT (por dispositivo)
 const char* DEVICE_ID = "home_alarm_central_001";  // ID único de esta central
+
+// Certificado CA del broker (opcional - dejar vacío para deshabilitar verificación)
+// Para producción, deberías usar el certificado real del broker
+const char* MQTT_CA_CERT = "";  // Certificado CA en formato PEM (si está vacío, se deshabilita verificación)
 
 // ============================================
 // TOPICS MQTT
@@ -69,8 +96,9 @@ typedef struct {
 // ============================================
 // VARIABLES GLOBALES
 // ============================================
+WiFiClientSecure wifiClientSecure;
 WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
+PubSubClient* mqttClient;
 
 // Estado del sistema
 bool alarmArmed = false;
@@ -87,6 +115,7 @@ QueueHandle_t mqttCommandQueue;
 SemaphoreHandle_t stateMutex;
 
 // MAC addresses de los sensores (configurar según tus sensores)
+// ⚠️ IMPORTANTE: Obtén las MAC de tus sensores y configura aquí
 uint8_t sensorEscaleraMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
 uint8_t sensorSalaMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02};
 
@@ -110,7 +139,7 @@ void publishTamperTrigger(bool triggered);
 void processMQTTCommand(const char* command, bool value);
 
 void setupESPNow();
-void onESPNowRecv(const uint8_t* mac, const uint8_t* data, int len);
+void onESPNowRecv(const esp_now_recv_info* recv_info, const uint8_t* data, int len);
 void onESPNowSent(const uint8_t* mac, esp_now_send_status_t status);
 
 // ============================================
@@ -146,6 +175,27 @@ void setup() {
   if (!sensorQueue || !mqttCommandQueue || !stateMutex) {
     Serial.println("❌ Error creando colas/semáforos");
     while(1) delay(1000);
+  }
+
+  // Configurar cliente MQTT (TLS o no TLS)
+  if (MQTT_USE_TLS) {
+    Serial.println("🔒 MQTT configurado con TLS/SSL (puerto 8883)");
+    
+    // Configurar WiFiClientSecure
+    if (strlen(MQTT_CA_CERT) > 0) {
+      // Usar certificado CA para verificación
+      wifiClientSecure.setCACert(MQTT_CA_CERT);
+      Serial.println("✅ Verificación de certificado CA habilitada");
+    } else {
+      // Deshabilitar verificación de certificado (solo para desarrollo)
+      wifiClientSecure.setInsecure();
+      Serial.println("⚠️ Verificación de certificado DESHABILITADA (solo desarrollo)");
+    }
+    
+    mqttClient = new PubSubClient(wifiClientSecure);
+  } else {
+    Serial.println("🔓 MQTT configurado sin TLS (puerto 1883)");
+    mqttClient = new PubSubClient(wifiClient);
   }
 
   // Configurar ESP-NOW
@@ -247,22 +297,30 @@ void loop() {
 // ============================================
 void taskWiFiMQTT(void* parameter) {
   connectWiFi();
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback);
+  
+  // Configurar cliente MQTT con parámetros mejorados
+  mqttClient->setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient->setCallback(mqttCallback);
+  mqttClient->setKeepAlive(60);  // Keepalive de 60 segundos
+  mqttClient->setSocketTimeout(15);  // Timeout de 15 segundos
+  
+  // Esperar un poco después de conectar WiFi (más tiempo para TLS)
+  vTaskDelay(pdMS_TO_TICKS(MQTT_USE_TLS ? 3000 : 2000));
+  
   connectMQTT();
 
   TickType_t lastReconnect = 0;
   const TickType_t reconnectInterval = pdMS_TO_TICKS(5000);
 
   while (true) {
-    if (!mqttClient.connected()) {
+    if (!mqttClient->connected()) {
       TickType_t now = xTaskGetTickCount();
       if (now - lastReconnect > reconnectInterval) {
         lastReconnect = now;
         connectMQTT();
       }
     } else {
-      mqttClient.loop();
+      mqttClient->loop();
     }
 
     // Publicar estado periódicamente
@@ -291,7 +349,7 @@ void taskESPNow(void* parameter) {
                     sensorData.rssi);
 
       // Publicar por MQTT
-      if (mqttClient.connected()) {
+      if (mqttClient->connected()) {
         StaticJsonDocument<200> doc;
         doc["sensor_id"] = sensorData.sensor_id;
         doc["sensor_name"] = (sensorData.sensor_id == 1) ? "escalera" : "sala_entrada";
@@ -302,7 +360,7 @@ void taskESPNow(void* parameter) {
 
         char buffer[200];
         serializeJson(doc, buffer);
-        mqttClient.publish(TOPIC_SENSOR_DATA, buffer);
+        mqttClient->publish(TOPIC_SENSOR_DATA, buffer);
 
         // Si la alarma está armada y el sensor se activó, disparar alarma
         if (alarmArmed && sensorData.triggered) {
@@ -383,8 +441,8 @@ void taskAlarmLogic(void* parameter) {
 // ============================================
 void taskHeartbeat(void* parameter) {
   while (true) {
-    if (mqttClient.connected()) {
-      StaticJsonDocument<150> doc;
+    if (mqttClient->connected()) {
+      StaticJsonDocument<200> doc;
       doc["device_id"] = DEVICE_ID;
       doc["alarm_armed"] = alarmArmed;
       doc["siren_active"] = (sirenState == ESTADO_SIRENA_PRINCIPAL_ON);
@@ -397,7 +455,7 @@ void taskHeartbeat(void* parameter) {
 
       char buffer[150];
       serializeJson(doc, buffer);
-      mqttClient.publish(TOPIC_HEARTBEAT, buffer);
+      mqttClient->publish(TOPIC_HEARTBEAT, buffer);
     }
 
     vTaskDelay(pdMS_TO_TICKS(60000));  // Cada 60 segundos
@@ -486,24 +544,89 @@ void connectWiFi() {
 }
 
 void connectMQTT() {
-  if (mqttClient.connected()) return;
+  if (mqttClient->connected()) return;
+
+  // Verificar que WiFi esté conectado
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("❌ WiFi no conectado, no se puede conectar a MQTT");
+    return;
+  }
 
   Serial.print("🔌 Conectando a MQTT...");
+  Serial.print(" Broker: ");
+  Serial.print(MQTT_BROKER);
+  Serial.print(":");
+  Serial.print(MQTT_PORT);
+  Serial.print(" Usuario: ");
+  Serial.print(MQTT_USERNAME);
+  Serial.println("...");
   
   String clientId = "home_alarm_central_";
   clientId += String(random(0xffff), HEX);
+  Serial.print("   Client ID: ");
+  Serial.println(clientId);
 
-  if (mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
-    Serial.println(" ✅ MQTT conectado!");
-    mqttClient.subscribe(TOPIC_COMMAND);
+  // Intentar conectar con timeout más largo
+  mqttClient->setSocketTimeout(15);  // 15 segundos de timeout
+  
+  Serial.print("   Autenticación: Usuario=");
+  Serial.print(MQTT_USERNAME);
+  Serial.println(" (por dispositivo)");
+  
+  if (mqttClient->connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
+    Serial.println("✅ MQTT conectado con TLS!");
+    mqttClient->subscribe(TOPIC_COMMAND);
     Serial.print("📥 Suscrito a: ");
     Serial.println(TOPIC_COMMAND);
     
     // Publicar estado inicial
     publishStatus();
   } else {
-    Serial.print(" ❌ Error: ");
-    Serial.println(mqttClient.state());
+    int state = mqttClient->state();
+    Serial.print("❌ Error de conexión MQTT: ");
+    Serial.print(state);
+    Serial.print(" (");
+    switch(state) {
+      case -4: Serial.print("MQTT_CONNECTION_TIMEOUT - El servidor no respondió a tiempo"); break;
+      case -3: Serial.print("MQTT_CONNECTION_LOST - Se perdió la conexión"); break;
+      case -2: Serial.print("MQTT_CONNECT_FAILED - No se pudo conectar al servidor. Verifica:"); break;
+      case -1: Serial.print("MQTT_DISCONNECTED - Desconectado"); break;
+      case 1: Serial.print("MQTT_CONNECT_BAD_PROTOCOL - Versión de protocolo incorrecta"); break;
+      case 2: Serial.print("MQTT_CONNECT_BAD_CLIENT_ID - ID de cliente rechazado"); break;
+      case 3: Serial.print("MQTT_CONNECT_UNAVAILABLE - Servidor no disponible"); break;
+      case 4: Serial.print("MQTT_CONNECT_BAD_CREDENTIALS - Usuario o contraseña incorrectos"); break;
+      case 5: Serial.print("MQTT_CONNECT_UNAUTHORIZED - No autorizado"); break;
+      default: Serial.print("Estado desconocido"); break;
+    }
+    Serial.println(")");
+    
+    // Información adicional de diagnóstico
+    Serial.println("   Diagnóstico:");
+    Serial.print("   - WiFi Status: ");
+    Serial.println(WiFi.status() == WL_CONNECTED ? "✅ Conectado" : "❌ Desconectado");
+    Serial.print("   - IP Local: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("   - Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("   - DNS: ");
+    Serial.println(WiFi.dnsIP());
+    Serial.print("   - RSSI: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+    Serial.print("   - Broker: ");
+    Serial.print(MQTT_BROKER);
+    Serial.print(":");
+    Serial.println(MQTT_PORT);
+    Serial.print("   - Usuario: ");
+    Serial.println(MQTT_USERNAME);
+    
+    if (state == -2) {
+      Serial.println("   Posibles causas:");
+      Serial.println("   1. El broker no es accesible desde esta red");
+      Serial.println("   2. El puerto 1883 está bloqueado por firewall");
+      Serial.println("   3. El broker requiere SSL/TLS (puerto 8883)");
+      Serial.println("   4. Problemas de conectividad de red");
+    }
   }
 }
 
@@ -529,11 +652,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(topic, TOPIC_COMMAND) == 0) {
     MQTTCommand cmd;
     
-    if (doc.containsKey("command")) {
+    if (doc["command"].is<const char*>()) {
       strncpy(cmd.command, doc["command"], sizeof(cmd.command) - 1);
       cmd.command[sizeof(cmd.command) - 1] = '\0';
       
-      if (doc.containsKey("value")) {
+      if (doc["value"].is<bool>()) {
         cmd.value = doc["value"];
       } else {
         cmd.value = true;
@@ -549,7 +672,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 void publishStatus() {
-  if (!mqttClient.connected()) return;
+  if (!mqttClient->connected()) return;
 
   StaticJsonDocument<350> doc;
   doc["device_id"] = DEVICE_ID;
@@ -565,11 +688,11 @@ void publishStatus() {
 
   char buffer[350];
   serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_STATUS, buffer);
+  mqttClient->publish(TOPIC_STATUS, buffer);
 }
 
 void publishSensorTrigger(uint8_t sensorId, bool triggered) {
-  if (!mqttClient.connected()) return;
+  if (!mqttClient->connected()) return;
 
   StaticJsonDocument<200> doc;
   doc["device_id"] = DEVICE_ID;
@@ -581,7 +704,7 @@ void publishSensorTrigger(uint8_t sensorId, bool triggered) {
 
   char buffer[200];
   serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_ALARM_TRIGGER, buffer);
+  mqttClient->publish(TOPIC_ALARM_TRIGGER, buffer);
 
   // Activar sirena si está armada
   if (alarmArmed && triggered) {
@@ -593,7 +716,7 @@ void publishSensorTrigger(uint8_t sensorId, bool triggered) {
 }
 
 void publishTamperTrigger(bool triggered) {
-  if (!mqttClient.connected()) return;
+  if (!mqttClient->connected()) return;
 
   StaticJsonDocument<250> doc;
   doc["device_id"] = DEVICE_ID;
@@ -606,7 +729,7 @@ void publishTamperTrigger(bool triggered) {
 
   char buffer[250];
   serializeJson(doc, buffer);
-  mqttClient.publish(TOPIC_ALARM_TRIGGER, buffer);
+  mqttClient->publish(TOPIC_ALARM_TRIGGER, buffer);
   
   Serial.printf("📤 Evento tamper publicado: %s\n", triggered ? "ACTIVADO" : "RESTAURADO");
 }
@@ -670,10 +793,13 @@ void setupESPNow() {
   Serial.println("✅ ESP-NOW inicializado");
 }
 
-void onESPNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
+void onESPNowRecv(const esp_now_recv_info* recv_info, const uint8_t* data, int len) {
   if (len != sizeof(SensorData) - 6) {  // -6 porque no enviamos MAC en el payload
     return;
   }
+
+  // Obtener MAC del remitente desde recv_info
+  const uint8_t* mac = recv_info->src_addr;
 
   SensorData sensorData;
   memcpy(sensorData.mac, mac, 6);

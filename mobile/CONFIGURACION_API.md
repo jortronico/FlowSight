@@ -5,8 +5,8 @@ Guía para configurar la URL del backend en la app móvil.
 ## 🔧 Configuración Actual
 
 Por defecto, la app se conecta a:
-- **API**: `https://alarma.puntopedido.com.ar/api`
-- **Socket.IO**: `https://alarma.puntopedido.com.ar`
+- **API**: `https://puntopedido.com.ar/api`
+- **Socket.IO**: `https://puntopedido.com.ar`
 
 ## 📝 Cambiar la URL del Backend
 
@@ -40,7 +40,7 @@ El backend debe estar configurado para aceptar conexiones desde tu dominio:
 
 1. **CORS configurado** en `backend/src/index.js`:
    ```javascript
-   const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://alarma.puntopedido.com.ar';
+   const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://puntopedido.com.ar';
    ```
 
 2. **Trust proxy habilitado**:
@@ -69,7 +69,7 @@ Si necesitas conectarte a un servidor local durante el desarrollo:
 ## ✅ Verificar Conexión
 
 1. **Probar API REST**:
-   - Abre en el navegador: `https://alarma.puntopedido.com.ar/api/health`
+   - Abre en el navegador: `https://puntopedido.com.ar/api/health`
    - Debe devolver: `{"status":"ok",...}`
 
 2. **Probar desde la app**:

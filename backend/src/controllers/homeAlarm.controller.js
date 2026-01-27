@@ -1,7 +1,27 @@
 const HomeAlarmModel = require('../models/homeAlarm.model');
 const socketService = require('../services/socket.service');
 const mqttService = require('../services/mqtt.service');
+const homeAlarmDeviceController = require('./homeAlarmDevice.controller');
 const db = require('../config/database');
+
+// Función auxiliar para crear comandos para dispositivos HTTP
+const createDeviceCommand = async (deviceId, command, value, metadata = null) => {
+  try {
+    await db.execute(
+      `INSERT INTO device_commands (device_id, command, value, metadata, expires_at) 
+       VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))`,
+      [
+        deviceId,
+        command,
+        String(value),
+        metadata ? JSON.stringify(metadata) : null
+      ]
+    );
+    console.log(`✅ Comando creado para dispositivo ${deviceId}: ${command} = ${value}`);
+  } catch (error) {
+    console.error(`❌ Error creando comando para dispositivo ${deviceId}:`, error);
+  }
+};
 
 // Función para registrar eventos de seguridad
 const logSecurityEvent = async (eventType, userId, details) => {
@@ -90,6 +110,9 @@ const homeAlarmController = {
 
       // Enviar comando por MQTT a la central
       mqttService.publishHomeAlarmCommand('arm', true);
+      
+      // Crear comando para dispositivo HTTP (polling)
+      await createDeviceCommand('home_alarm_central_001', 'arm', true);
 
       // Notificar por Socket.IO
       socketService.emit('home_alarm:status', status);
@@ -164,6 +187,9 @@ const homeAlarmController = {
 
       // Enviar comando por MQTT a la central
       mqttService.publishHomeAlarmCommand('arm', false);
+      
+      // Crear comando para dispositivo HTTP (polling)
+      await createDeviceCommand('home_alarm_central_001', 'disarm', false);
 
       // Notificar por Socket.IO
       socketService.emit('home_alarm:status', status);
@@ -221,6 +247,12 @@ const homeAlarmController = {
         user_id: userId,
         message: 'Sirena activada manualmente'
       });
+
+      // Enviar comando por MQTT a la central
+      mqttService.publishHomeAlarmCommand('siren', true);
+      
+      // Crear comando para dispositivo HTTP (polling)
+      await createDeviceCommand('home_alarm_central_001', 'siren', true);
 
       socketService.emit('home_alarm:status', status);
       socketService.emit('home_alarm:event', {
@@ -317,6 +349,9 @@ const homeAlarmController = {
 
       // Enviar comando por MQTT a la central
       mqttService.publishHomeAlarmCommand('siren', false);
+      
+      // Crear comando para dispositivo HTTP (polling)
+      await createDeviceCommand('home_alarm_central_001', 'siren', false);
 
       socketService.emit('home_alarm:status', status);
       socketService.emit('home_alarm:event', {
