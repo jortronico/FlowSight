@@ -60,9 +60,10 @@ app.use('/api/alarms', alarmRoutes);
 app.use('/api/valves', valveRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+// IMPORTANTE: Montar rutas de dispositivos ANTES de las rutas generales de home-alarm
+// para que no se aplique el middleware JWT de homeAlarmRoutes
+app.use('/api/home-alarm/device', homeAlarmDeviceRoutes);
 app.use('/api/home-alarm', homeAlarmRoutes);
-app.use('/api/home-alarm/device', homeAlarmDeviceRoutes);
-app.use('/api/home-alarm/device', homeAlarmDeviceRoutes);
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {
